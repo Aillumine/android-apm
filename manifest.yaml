@@ -1,0 +1,1361 @@
+id: android-apm
+title: Android APM Dashboard
+params:
+  # 默认 2 天窗口：app_frame_performance / chat_stream_result 单日都是 2 亿级，
+  # 默认开一个长窗口会让每次冷打开都排队。前端载入时用 setQuickRange(2) 覆盖，
+  # 这里的默认值主要影响 verify_upload 的实跑校验。
+  date_start:
+    default: "2026-09-19"
+  date_end:
+    default: "2026-09-20"
+  use_date_end:
+    default: 1
+  jank_threshold:
+    default: 10
+  cold_threshold_ms:
+    default: 2000
+datasets:
+  # ---------- 流畅度（app_frame_performance，1% 采样） ----------
+  frame_overview:
+    params: [date_start, date_end, use_date_end, jank_threshold]
+    sql: |
+      WITH f AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'jank_percent' THEN CAST(event_param_value AS DOUBLE) END) AS jank_percent,
+          MAX(CASE WHEN event_param_key = 'max_frame_ms' THEN CAST(event_param_value AS DOUBLE) END) AS max_frame_ms,
+          MAX(CASE WHEN event_param_key = 'avg_overrun_ms' THEN CAST(event_param_value AS DOUBLE) END) AS avg_overrun_ms,
+          MAX(CASE WHEN event_param_key = 'total_frames' THEN CAST(event_param_value AS DOUBLE) END) AS total_frames
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_frame_performance'
+          AND event_param_key IN ('jank_percent','max_frame_ms','avg_overrun_ms','total_frames')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+        GROUP BY event_id
+      )
+      SELECT
+        COUNT(*) * 100 AS est_sessions,
+        COUNT(*) AS sampled_sessions,
+        ROUND(AVG(jank_percent), 3) AS avg_jank_pct,
+        ROUND(percentile_approx(jank_percent, 0.90), 3) AS p90_jank_pct,
+        ROUND(percentile_approx(jank_percent, 0.95), 3) AS p95_jank_pct,
+        ROUND(percentile_approx(max_frame_ms, 0.95), 1) AS p95_max_frame_ms,
+        ROUND(AVG(avg_overrun_ms), 2) AS avg_overrun_ms,
+        ROUND(SUM(CASE WHEN jank_percent >= :jank_threshold THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS bad_session_ratio,
+        SUM(total_frames) * 100 AS est_total_frames
+      FROM f
+      WHERE jank_percent IS NOT NULL
+  frame_percentiles:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH f AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'jank_percent' THEN CAST(event_param_value AS DOUBLE) END) AS jank_percent
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_frame_performance'
+          AND event_param_key = 'jank_percent'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+        GROUP BY event_id
+      )
+      SELECT
+        COUNT(*) AS sampled_sessions,
+        ROUND(percentile_approx(jank_percent, 0.50), 3) AS p50,
+        ROUND(percentile_approx(jank_percent, 0.75), 3) AS p75,
+        ROUND(percentile_approx(jank_percent, 0.90), 3) AS p90,
+        ROUND(percentile_approx(jank_percent, 0.95), 3) AS p95,
+        ROUND(percentile_approx(jank_percent, 0.98), 3) AS p98,
+        ROUND(percentile_approx(jank_percent, 0.99), 3) AS p99
+      FROM f
+      WHERE jank_percent IS NOT NULL
+  frame_by_screen:
+    params: [date_start, date_end, use_date_end, jank_threshold]
+    sql: |
+      WITH f AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'jank_percent' THEN CAST(event_param_value AS DOUBLE) END) AS jank_percent,
+          MAX(CASE WHEN event_param_key = 'max_frame_ms' THEN CAST(event_param_value AS DOUBLE) END) AS max_frame_ms,
+          MAX(CASE WHEN event_param_key = 'screen' THEN event_param_value END) AS screen
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_frame_performance'
+          AND event_param_key IN ('jank_percent','max_frame_ms','screen')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+        GROUP BY event_id
+      )
+      SELECT
+        screen,
+        COUNT(*) AS sampled_sessions,
+        ROUND(AVG(jank_percent), 3) AS avg_jank_pct,
+        ROUND(percentile_approx(jank_percent, 0.90), 3) AS p90_jank_pct,
+        ROUND(percentile_approx(max_frame_ms, 0.95), 1) AS p95_max_frame_ms,
+        ROUND(SUM(CASE WHEN jank_percent >= :jank_threshold THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS bad_session_ratio
+      FROM f
+      WHERE screen IS NOT NULL AND screen <> '' AND jank_percent IS NOT NULL
+      GROUP BY screen
+      HAVING COUNT(*) >= 200
+      ORDER BY avg_jank_pct DESC
+      LIMIT 25
+  frame_daily_by_version:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH f AS (
+        SELECT event_date, event_id,
+          MAX(CASE WHEN event_param_key = 'jank_percent' THEN CAST(event_param_value AS DOUBLE) END) AS jank_percent
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_frame_performance'
+          AND event_param_key = 'jank_percent'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+        GROUP BY event_date, event_id
+      ),
+      v AS (
+        SELECT event_id, get_json_string(app_info, '$.version') AS app_version
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'app_frame_performance'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+      )
+      SELECT
+        f.event_date,
+        v.app_version,
+        COUNT(*) AS sampled_sessions,
+        ROUND(AVG(f.jank_percent), 3) AS avg_jank_pct,
+        ROUND(percentile_approx(f.jank_percent, 0.90), 3) AS p90_jank_pct
+      FROM f JOIN v ON v.event_id = f.event_id
+      WHERE f.jank_percent IS NOT NULL AND v.app_version IS NOT NULL AND v.app_version <> ''
+      GROUP BY f.event_date, v.app_version
+      HAVING COUNT(*) >= 50
+      ORDER BY f.event_date ASC, v.app_version ASC
+  frame_by_version:
+    params: [date_start, date_end, use_date_end, jank_threshold]
+    sql: |
+      WITH f AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'jank_percent' THEN CAST(event_param_value AS DOUBLE) END) AS jank_percent,
+          MAX(CASE WHEN event_param_key = 'max_frame_ms' THEN CAST(event_param_value AS DOUBLE) END) AS max_frame_ms
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_frame_performance'
+          AND event_param_key IN ('jank_percent','max_frame_ms')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+        GROUP BY event_id
+      ),
+      v AS (
+        SELECT event_id, get_json_string(app_info, '$.version') AS app_version
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'app_frame_performance'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+      )
+      SELECT
+        v.app_version,
+        COUNT(*) AS sampled_sessions,
+        ROUND(AVG(f.jank_percent), 3) AS avg_jank_pct,
+        ROUND(percentile_approx(f.jank_percent, 0.90), 3) AS p90_jank_pct,
+        ROUND(percentile_approx(f.max_frame_ms, 0.95), 1) AS p95_max_frame_ms,
+        ROUND(SUM(CASE WHEN f.jank_percent >= :jank_threshold THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS bad_session_ratio
+      FROM f JOIN v ON v.event_id = f.event_id
+      WHERE f.jank_percent IS NOT NULL AND v.app_version IS NOT NULL AND v.app_version <> ''
+      GROUP BY v.app_version
+      HAVING COUNT(*) >= 100
+      ORDER BY sampled_sessions DESC
+      LIMIT 15
+  # ---------- 冷启动（app_launch_cold，全量） ----------
+  startup_overview:
+    params: [date_start, date_end, use_date_end, cold_threshold_ms]
+    sql: |
+      WITH c AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'startup_process_to_create_ms' THEN CAST(event_param_value AS DOUBLE) END) AS process_to_create_ms,
+          MAX(CASE WHEN event_param_key = 'startup_oncreate_cost_ms' THEN CAST(event_param_value AS DOUBLE) END) AS oncreate_cost_ms,
+          MAX(CASE WHEN event_param_key = 'startup_to_cold_event_ms' THEN CAST(event_param_value AS DOUBLE) END) AS to_cold_event_ms,
+          MAX(CASE WHEN event_param_key = 'startup_first_frame_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_frame_ms
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_launch_cold'
+          AND event_param_key IN ('startup_process_to_create_ms','startup_oncreate_cost_ms','startup_to_cold_event_ms','startup_first_frame_ms')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY event_id
+      )
+      SELECT
+        COUNT(*) AS launches,
+        SUM(CASE WHEN to_cold_event_ms IS NOT NULL THEN 1 ELSE 0 END) AS total_measured,
+        ROUND(SUM(CASE WHEN to_cold_event_ms IS NOT NULL THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 4) AS total_coverage,
+        ROUND(percentile_approx(process_to_create_ms, 0.50), 0) AS p50_process_to_create_ms,
+        ROUND(percentile_approx(process_to_create_ms, 0.90), 0) AS p90_process_to_create_ms,
+        ROUND(percentile_approx(oncreate_cost_ms, 0.50), 0) AS p50_oncreate_ms,
+        ROUND(percentile_approx(oncreate_cost_ms, 0.90), 0) AS p90_oncreate_ms,
+        ROUND(percentile_approx(to_cold_event_ms, 0.50), 0) AS p50_total_ms,
+        ROUND(percentile_approx(to_cold_event_ms, 0.90), 0) AS p90_total_ms,
+        ROUND(percentile_approx(to_cold_event_ms, 0.95), 0) AS p95_total_ms,
+        ROUND(SUM(CASE WHEN to_cold_event_ms >= :cold_threshold_ms THEN 1 ELSE 0 END) / NULLIF(SUM(CASE WHEN to_cold_event_ms IS NOT NULL THEN 1 ELSE 0 END), 0), 6) AS slow_launch_ratio,
+        SUM(CASE WHEN first_frame_ms IS NOT NULL THEN 1 ELSE 0 END) AS first_frame_samples,
+        ROUND(percentile_approx(first_frame_ms, 0.50), 0) AS p50_first_frame_ms,
+        ROUND(percentile_approx(first_frame_ms, 0.90), 0) AS p90_first_frame_ms
+      FROM c
+  startup_daily:
+    params: [date_start, date_end, use_date_end, cold_threshold_ms]
+    sql: |
+      WITH c AS (
+        SELECT event_date, event_id,
+          MAX(CASE WHEN event_param_key = 'startup_process_to_create_ms' THEN CAST(event_param_value AS DOUBLE) END) AS process_to_create_ms,
+          MAX(CASE WHEN event_param_key = 'startup_oncreate_cost_ms' THEN CAST(event_param_value AS DOUBLE) END) AS oncreate_cost_ms,
+          MAX(CASE WHEN event_param_key = 'startup_to_cold_event_ms' THEN CAST(event_param_value AS DOUBLE) END) AS to_cold_event_ms
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_launch_cold'
+          AND event_param_key IN ('startup_process_to_create_ms','startup_oncreate_cost_ms','startup_to_cold_event_ms')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY event_date, event_id
+      )
+      SELECT
+        event_date,
+        COUNT(*) AS launches,
+        ROUND(percentile_approx(to_cold_event_ms, 0.50), 0) AS p50_total_ms,
+        ROUND(percentile_approx(to_cold_event_ms, 0.90), 0) AS p90_total_ms,
+        ROUND(percentile_approx(process_to_create_ms, 0.90), 0) AS p90_process_to_create_ms,
+        ROUND(percentile_approx(oncreate_cost_ms, 0.90), 0) AS p90_oncreate_ms,
+        ROUND(SUM(CASE WHEN to_cold_event_ms IS NOT NULL THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 4) AS coverage,
+        ROUND(SUM(CASE WHEN to_cold_event_ms >= :cold_threshold_ms THEN 1 ELSE 0 END) / NULLIF(SUM(CASE WHEN to_cold_event_ms IS NOT NULL THEN 1 ELSE 0 END), 0), 6) AS slow_launch_ratio
+      FROM c
+      GROUP BY event_date
+      ORDER BY event_date ASC
+  startup_by_version:
+    params: [date_start, date_end, use_date_end, cold_threshold_ms]
+    sql: |
+      WITH c AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'startup_process_to_create_ms' THEN CAST(event_param_value AS DOUBLE) END) AS process_to_create_ms,
+          MAX(CASE WHEN event_param_key = 'startup_oncreate_cost_ms' THEN CAST(event_param_value AS DOUBLE) END) AS oncreate_cost_ms,
+          MAX(CASE WHEN event_param_key = 'startup_to_cold_event_ms' THEN CAST(event_param_value AS DOUBLE) END) AS to_cold_event_ms
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_launch_cold'
+          AND event_param_key IN ('startup_process_to_create_ms','startup_oncreate_cost_ms','startup_to_cold_event_ms')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY event_id
+      ),
+      v AS (
+        SELECT event_id, get_json_string(app_info, '$.version') AS app_version
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'app_launch_cold'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+      )
+      SELECT
+        v.app_version,
+        COUNT(*) AS launches,
+        ROUND(percentile_approx(c.to_cold_event_ms, 0.50), 0) AS p50_total_ms,
+        ROUND(percentile_approx(c.to_cold_event_ms, 0.90), 0) AS p90_total_ms,
+        ROUND(percentile_approx(c.process_to_create_ms, 0.90), 0) AS p90_process_to_create_ms,
+        ROUND(percentile_approx(c.oncreate_cost_ms, 0.90), 0) AS p90_oncreate_ms,
+        ROUND(SUM(CASE WHEN c.to_cold_event_ms IS NOT NULL THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 4) AS coverage,
+        ROUND(SUM(CASE WHEN c.to_cold_event_ms >= :cold_threshold_ms THEN 1 ELSE 0 END) / NULLIF(SUM(CASE WHEN c.to_cold_event_ms IS NOT NULL THEN 1 ELSE 0 END), 0), 6) AS slow_launch_ratio
+      FROM c JOIN v ON v.event_id = c.event_id
+      WHERE v.app_version IS NOT NULL AND v.app_version <> ''
+      GROUP BY v.app_version
+      HAVING COUNT(*) >= 500
+      ORDER BY launches DESC
+      LIMIT 15
+  startup_by_model:
+    params: [date_start, date_end, use_date_end, cold_threshold_ms]
+    sql: |
+      WITH c AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'startup_to_cold_event_ms' THEN CAST(event_param_value AS DOUBLE) END) AS to_cold_event_ms
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_launch_cold'
+          AND event_param_key = 'startup_to_cold_event_ms'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY event_id
+      ),
+      d AS (
+        SELECT event_id,
+          get_json_string(device, '$.mobile_brand_name') AS brand,
+          get_json_string(device, '$.mobile_model_name') AS model,
+          get_json_string(device, '$.operating_system_version') AS os_version
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'app_launch_cold'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+      )
+      SELECT
+        d.brand,
+        d.model,
+        COUNT(*) AS launches,
+        ROUND(percentile_approx(c.to_cold_event_ms, 0.50), 0) AS p50_total_ms,
+        ROUND(percentile_approx(c.to_cold_event_ms, 0.90), 0) AS p90_total_ms,
+        ROUND(SUM(CASE WHEN c.to_cold_event_ms >= :cold_threshold_ms THEN 1 ELSE 0 END) / NULLIF(SUM(CASE WHEN c.to_cold_event_ms IS NOT NULL THEN 1 ELSE 0 END), 0), 6) AS slow_launch_ratio
+      FROM c JOIN d ON d.event_id = c.event_id
+      WHERE c.to_cold_event_ms IS NOT NULL AND d.model IS NOT NULL AND d.model <> ''
+      GROUP BY d.brand, d.model
+      HAVING COUNT(*) >= 300
+      ORDER BY p90_total_ms DESC
+      LIMIT 25
+  startup_by_os:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH c AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'startup_to_cold_event_ms' THEN CAST(event_param_value AS DOUBLE) END) AS to_cold_event_ms
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_launch_cold'
+          AND event_param_key = 'startup_to_cold_event_ms'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY event_id
+      ),
+      d AS (
+        SELECT event_id, get_json_string(device, '$.operating_system_version') AS os_version
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'app_launch_cold'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+      )
+      SELECT
+        d.os_version,
+        COUNT(*) AS launches,
+        ROUND(percentile_approx(c.to_cold_event_ms, 0.50), 0) AS p50_total_ms,
+        ROUND(percentile_approx(c.to_cold_event_ms, 0.90), 0) AS p90_total_ms
+      FROM c JOIN d ON d.event_id = c.event_id
+      WHERE c.to_cold_event_ms IS NOT NULL AND d.os_version IS NOT NULL AND d.os_version <> ''
+      GROUP BY d.os_version
+      HAVING COUNT(*) >= 300
+      ORDER BY CAST(d.os_version AS INT) ASC
+  # ---------- 稳定性（app_crash：ANR / JVM / Native 分开，前台口径） ----------
+  # exit_reason ∈ {anr, jvm, native}；process_importance <= 200 视为用户可感知的前台退出
+  # （100=FOREGROUND, 200=VISIBLE），后台 CACHED/SERVICE 退出不计入可感知稳定性指标。
+  crash_overview:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH meta AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'exit_reason' THEN event_param_value END) AS exit_reason,
+          MAX(CASE WHEN event_param_key = 'process_importance' THEN event_param_value END) AS process_importance
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_crash'
+          AND event_param_key IN ('exit_reason', 'process_importance')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY event_id
+      ),
+      base AS (
+        SELECT e.event_id, e.user_pseudo_id, m.exit_reason,
+          CASE WHEN m.process_importance IS NOT NULL
+                    AND REGEXP(m.process_importance, '^[0-9]+$')
+                    AND CAST(m.process_importance AS INT) <= 200
+               THEN 1 ELSE 0 END AS is_foreground
+        FROM ods_original.ods_clickstream_app_event_di e
+        JOIN meta m ON m.event_id = e.event_id
+        WHERE e.event_name = 'app_crash'
+          AND e.platform = 'Android'
+          AND get_json_string(e.app_info, '$.id') = 'com.flow.mobile'
+          AND e.event_date >= :date_start
+          AND (:use_date_end = 0 OR e.event_date <= :date_end)
+      ),
+      agg AS (
+        SELECT
+          SUM(CASE WHEN is_foreground = 1 AND exit_reason IN ('jvm', 'native') THEN 1 ELSE 0 END) AS fg_crash_count,
+          COUNT(DISTINCT CASE WHEN is_foreground = 1 AND exit_reason IN ('jvm', 'native') THEN user_pseudo_id END) AS fg_crash_users,
+          SUM(CASE WHEN is_foreground = 1 AND exit_reason = 'anr' THEN 1 ELSE 0 END) AS fg_anr_count,
+          COUNT(DISTINCT CASE WHEN is_foreground = 1 AND exit_reason = 'anr' THEN user_pseudo_id END) AS fg_anr_users,
+          SUM(CASE WHEN exit_reason = 'jvm' THEN 1 ELSE 0 END) AS jvm_count,
+          SUM(CASE WHEN exit_reason = 'native' THEN 1 ELSE 0 END) AS native_count,
+          SUM(CASE WHEN exit_reason = 'anr' THEN 1 ELSE 0 END) AS anr_count,
+          SUM(CASE WHEN is_foreground = 0 THEN 1 ELSE 0 END) AS background_exit_count,
+          COUNT(*) AS all_exit_count
+        FROM base
+      ),
+      launches AS (
+        SELECT COUNT(*) AS launches, COUNT(DISTINCT user_pseudo_id) AS launch_users
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'app_launch_cold'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+      )
+      SELECT
+        a.fg_crash_count, a.fg_crash_users, a.fg_anr_count, a.fg_anr_users,
+        a.jvm_count, a.native_count, a.anr_count,
+        a.background_exit_count, a.all_exit_count,
+        l.launches, l.launch_users,
+        ROUND(1 - a.fg_crash_users / NULLIF(l.launch_users, 0), 6) AS crash_free_user_rate,
+        ROUND(1 - a.fg_anr_users / NULLIF(l.launch_users, 0), 6) AS anr_free_user_rate,
+        ROUND(a.fg_crash_count / NULLIF(l.launches, 0), 6) AS crash_per_launch,
+        ROUND(a.fg_anr_count / NULLIF(l.launches, 0), 6) AS anr_per_launch
+      FROM agg a CROSS JOIN launches l
+  crash_daily:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH meta AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'exit_reason' THEN event_param_value END) AS exit_reason,
+          MAX(CASE WHEN event_param_key = 'process_importance' THEN event_param_value END) AS process_importance
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_crash'
+          AND event_param_key IN ('exit_reason', 'process_importance')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY event_id
+      ),
+      crashes AS (
+        SELECT e.event_date,
+          SUM(CASE WHEN m.exit_reason IN ('jvm', 'native') AND CAST(m.process_importance AS INT) <= 200 THEN 1 ELSE 0 END) AS fg_crash_count,
+          COUNT(DISTINCT CASE WHEN m.exit_reason IN ('jvm', 'native') AND CAST(m.process_importance AS INT) <= 200 THEN e.user_pseudo_id END) AS fg_crash_users,
+          SUM(CASE WHEN m.exit_reason = 'anr' AND CAST(m.process_importance AS INT) <= 200 THEN 1 ELSE 0 END) AS fg_anr_count,
+          COUNT(DISTINCT CASE WHEN m.exit_reason = 'anr' AND CAST(m.process_importance AS INT) <= 200 THEN e.user_pseudo_id END) AS fg_anr_users
+        FROM ods_original.ods_clickstream_app_event_di e
+        JOIN meta m ON m.event_id = e.event_id
+        WHERE e.event_name = 'app_crash'
+          AND e.platform = 'Android'
+          AND get_json_string(e.app_info, '$.id') = 'com.flow.mobile'
+          AND REGEXP(m.process_importance, '^[0-9]+$')
+          AND e.event_date >= :date_start
+          AND (:use_date_end = 0 OR e.event_date <= :date_end)
+        GROUP BY e.event_date
+      ),
+      launches AS (
+        SELECT event_date, COUNT(*) AS launches, COUNT(DISTINCT user_pseudo_id) AS launch_users
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'app_launch_cold'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY event_date
+      )
+      SELECT
+        l.event_date,
+        COALESCE(c.fg_crash_count, 0) AS fg_crash_count,
+        COALESCE(c.fg_anr_count, 0) AS fg_anr_count,
+        l.launches, l.launch_users,
+        ROUND(1 - COALESCE(c.fg_crash_users, 0) / NULLIF(l.launch_users, 0), 6) AS crash_free_user_rate,
+        ROUND(1 - COALESCE(c.fg_anr_users, 0) / NULLIF(l.launch_users, 0), 6) AS anr_free_user_rate,
+        ROUND(COALESCE(c.fg_crash_count, 0) / NULLIF(l.launches, 0), 6) AS crash_per_launch,
+        ROUND(COALESCE(c.fg_anr_count, 0) / NULLIF(l.launches, 0), 6) AS anr_per_launch
+      FROM launches l LEFT JOIN crashes c ON c.event_date = l.event_date
+      ORDER BY l.event_date ASC
+  crash_breakdown:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH c AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'exit_reason' THEN event_param_value END) AS exit_reason,
+          MAX(CASE WHEN event_param_key = 'detection_source' THEN event_param_value END) AS detection_source,
+          MAX(CASE WHEN event_param_key = 'process_importance' THEN event_param_value END) AS process_importance
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_crash'
+          AND event_param_key IN ('exit_reason', 'detection_source', 'process_importance')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY event_id
+      )
+      SELECT
+        COALESCE(exit_reason, 'unknown') AS exit_reason,
+        COALESCE(process_importance, 'unknown') AS process_importance,
+        CASE
+          WHEN process_importance = '100' THEN 'foreground'
+          WHEN process_importance = '200' THEN 'visible'
+          WHEN process_importance = '230' THEN 'perceptible'
+          WHEN process_importance = '300' THEN 'service'
+          WHEN process_importance = '325' THEN 'top-sleeping'
+          WHEN process_importance = '400' THEN 'cached'
+          ELSE 'other'
+        END AS importance_label,
+        COALESCE(detection_source, 'unknown') AS detection_source,
+        COUNT(*) AS exit_count
+      FROM c
+      GROUP BY 1, 2, 3, 4
+      ORDER BY exit_count DESC
+      LIMIT 40
+  crash_by_version:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH meta AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'exit_reason' THEN event_param_value END) AS exit_reason,
+          MAX(CASE WHEN event_param_key = 'process_importance' THEN event_param_value END) AS process_importance
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_crash'
+          AND event_param_key IN ('exit_reason', 'process_importance')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY event_id
+      ),
+      crashes AS (
+        SELECT get_json_string(e.app_info, '$.version') AS app_version,
+          SUM(CASE WHEN m.exit_reason IN ('jvm', 'native') AND CAST(m.process_importance AS INT) <= 200 THEN 1 ELSE 0 END) AS fg_crash_count,
+          COUNT(DISTINCT CASE WHEN m.exit_reason IN ('jvm', 'native') AND CAST(m.process_importance AS INT) <= 200 THEN e.user_pseudo_id END) AS fg_crash_users,
+          SUM(CASE WHEN m.exit_reason = 'anr' AND CAST(m.process_importance AS INT) <= 200 THEN 1 ELSE 0 END) AS fg_anr_count,
+          COUNT(DISTINCT CASE WHEN m.exit_reason = 'anr' AND CAST(m.process_importance AS INT) <= 200 THEN e.user_pseudo_id END) AS fg_anr_users,
+          COUNT(DISTINCT CASE WHEN m.exit_reason = 'anr' THEN e.user_pseudo_id END) AS anr_users
+        FROM ods_original.ods_clickstream_app_event_di e
+        JOIN meta m ON m.event_id = e.event_id
+        WHERE e.event_name = 'app_crash'
+          AND e.platform = 'Android'
+          AND get_json_string(e.app_info, '$.id') = 'com.flow.mobile'
+          -- The numeric-importance guard used to sit here; it now lives in the CASEs via CAST
+          -- (non-numeric -> NULL -> not foreground), so anr_users can include ANRs with any importance.
+          --
+          -- 原来这里用 WHERE 过滤掉非数字的 process_importance；现在交给 CASE 里的 CAST 处理
+          -- （非数字转成 NULL，不计入前台），这样 anr_users 能统计到任意 importance 的 ANR，前台各列口径不变。
+          AND e.event_date >= :date_start
+          AND (:use_date_end = 0 OR e.event_date <= :date_end)
+        GROUP BY 1
+      ),
+      launches AS (
+        SELECT get_json_string(app_info, '$.version') AS app_version,
+          COUNT(*) AS launches, COUNT(DISTINCT user_pseudo_id) AS launch_users
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'app_launch_cold'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY 1
+      )
+      SELECT
+        l.app_version,
+        l.launches, l.launch_users,
+        COALESCE(c.fg_crash_count, 0) AS fg_crash_count,
+        COALESCE(c.fg_anr_count, 0) AS fg_anr_count,
+        -- Distinct ANR users per version, foreground and background alike (crashes CTE is grouped by
+        -- version): repeat ANRs by one user on one version count once.
+        --
+        -- 按版本去重的 ANR 用户数，不区分前后台（crashes 已按版本分组）：同一用户在同一版本多次 ANR 只计 1 人。
+        COALESCE(c.anr_users, 0) AS anr_users,
+        ROUND(1 - COALESCE(c.fg_crash_users, 0) / NULLIF(l.launch_users, 0), 6) AS crash_free_user_rate,
+        ROUND(1 - COALESCE(c.fg_anr_users, 0) / NULLIF(l.launch_users, 0), 6) AS anr_free_user_rate,
+        ROUND(COALESCE(c.fg_crash_count, 0) / NULLIF(l.launches, 0), 6) AS crash_per_launch,
+        ROUND(COALESCE(c.fg_anr_count, 0) / NULLIF(l.launches, 0), 6) AS anr_per_launch
+      FROM launches l LEFT JOIN crashes c ON c.app_version = l.app_version
+      WHERE l.app_version IS NOT NULL AND l.app_version <> '' AND l.launch_users >= 500
+      ORDER BY l.launches DESC
+      LIMIT 15
+  crash_by_model:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH meta AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'exit_reason' THEN event_param_value END) AS exit_reason,
+          MAX(CASE WHEN event_param_key = 'process_importance' THEN event_param_value END) AS process_importance
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'app_crash'
+          AND event_param_key IN ('exit_reason', 'process_importance')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY event_id
+      ),
+      crashes AS (
+        SELECT
+          get_json_string(e.device, '$.mobile_brand_name') AS brand,
+          get_json_string(e.device, '$.mobile_model_name') AS model,
+          get_json_string(e.device, '$.operating_system_version') AS os_version,
+          COUNT(DISTINCT CASE WHEN m.exit_reason IN ('jvm', 'native') AND CAST(m.process_importance AS INT) <= 200 THEN e.user_pseudo_id END) AS fg_crash_users,
+          COUNT(DISTINCT CASE WHEN m.exit_reason = 'anr' AND CAST(m.process_importance AS INT) <= 200 THEN e.user_pseudo_id END) AS fg_anr_users
+        FROM ods_original.ods_clickstream_app_event_di e
+        JOIN meta m ON m.event_id = e.event_id
+        WHERE e.event_name = 'app_crash'
+          AND e.platform = 'Android'
+          AND get_json_string(e.app_info, '$.id') = 'com.flow.mobile'
+          AND REGEXP(m.process_importance, '^[0-9]+$')
+          AND e.event_date >= :date_start
+          AND (:use_date_end = 0 OR e.event_date <= :date_end)
+        GROUP BY 1, 2, 3
+      ),
+      launches AS (
+        SELECT
+          get_json_string(device, '$.mobile_brand_name') AS brand,
+          get_json_string(device, '$.mobile_model_name') AS model,
+          get_json_string(device, '$.operating_system_version') AS os_version,
+          COUNT(DISTINCT user_pseudo_id) AS launch_users
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'app_launch_cold'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY 1, 2, 3
+      )
+      SELECT
+        l.brand, l.model, l.os_version, l.launch_users,
+        COALESCE(c.fg_crash_users, 0) AS fg_crash_users,
+        COALESCE(c.fg_anr_users, 0) AS fg_anr_users,
+        ROUND(COALESCE(c.fg_crash_users, 0) / NULLIF(l.launch_users, 0), 6) AS crash_user_ratio,
+        ROUND(COALESCE(c.fg_anr_users, 0) / NULLIF(l.launch_users, 0), 6) AS anr_user_ratio
+      FROM launches l
+      LEFT JOIN crashes c ON c.brand = l.brand AND c.model = l.model AND c.os_version = l.os_version
+      WHERE l.launch_users >= 500 AND l.model IS NOT NULL AND l.model <> ''
+      ORDER BY (COALESCE(c.fg_crash_users, 0) + COALESCE(c.fg_anr_users, 0)) / NULLIF(l.launch_users, 0) DESC
+      LIMIT 25
+  # ---------- 收发消息（chat_stream_* ，1% 采样） ----------
+  # 口径闭合：completed_rate + timeout + network + server + other_failed = 100%。
+  # 归因全部来自同一个 chat_stream_result 事件，分母天然一致；不需要像 iOS 那样
+  # 用三个独立事件各自除以 chat_send。
+  msg_overview:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH s AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'result' THEN event_param_value END) AS result,
+          MAX(CASE WHEN event_param_key = 'interrupt_reason' THEN event_param_value END) AS interrupt_reason,
+          MAX(CASE WHEN event_param_key = 'total_ms' THEN CAST(event_param_value AS DOUBLE) END) AS total_ms,
+          MAX(CASE WHEN event_param_key = 'first_content_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_content_ms,
+          MAX(CASE WHEN event_param_key = 'exit_during_stream' THEN event_param_value END) AS exit_during_stream
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'chat_stream_result'
+          AND event_param_key IN ('result', 'interrupt_reason', 'total_ms', 'first_content_ms', 'exit_during_stream')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+        GROUP BY event_id
+      )
+      SELECT
+        COUNT(*) * 100 AS est_streams,
+        COUNT(*) AS sampled_streams,
+        ROUND(SUM(CASE WHEN result = 'completed' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS completed_rate,
+        ROUND(SUM(CASE WHEN result <> 'completed' AND interrupt_reason = 'timeout' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS timeout_ratio,
+        ROUND(SUM(CASE WHEN result <> 'completed' AND interrupt_reason = 'network' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS network_ratio,
+        ROUND(SUM(CASE WHEN result <> 'completed' AND interrupt_reason = 'server' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS server_ratio,
+        ROUND(SUM(CASE WHEN result <> 'completed' AND (interrupt_reason IS NULL OR interrupt_reason NOT IN ('timeout', 'network', 'server')) THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS other_failed_ratio,
+        SUM(CASE WHEN result <> 'completed' THEN 1 ELSE 0 END) * 100 AS est_failed,
+        ROUND(percentile_approx(CASE WHEN result = 'completed' THEN first_content_ms END, 0.50), 0) AS p50_first_content_ms,
+        ROUND(percentile_approx(CASE WHEN result = 'completed' THEN first_content_ms END, 0.90), 0) AS p90_first_content_ms,
+        ROUND(percentile_approx(CASE WHEN result = 'completed' THEN total_ms END, 0.50), 0) AS p50_total_ms,
+        ROUND(percentile_approx(CASE WHEN result = 'completed' THEN total_ms END, 0.90), 0) AS p90_total_ms,
+        ROUND(SUM(CASE WHEN exit_during_stream IS NOT NULL AND exit_during_stream <> 'none' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS exit_during_stream_ratio
+      FROM s
+  msg_daily:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH s AS (
+        SELECT event_date, event_id,
+          MAX(CASE WHEN event_param_key = 'result' THEN event_param_value END) AS result,
+          MAX(CASE WHEN event_param_key = 'interrupt_reason' THEN event_param_value END) AS interrupt_reason,
+          MAX(CASE WHEN event_param_key = 'total_ms' THEN CAST(event_param_value AS DOUBLE) END) AS total_ms,
+          MAX(CASE WHEN event_param_key = 'first_content_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_content_ms
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'chat_stream_result'
+          AND event_param_key IN ('result', 'interrupt_reason', 'total_ms', 'first_content_ms')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+        GROUP BY event_date, event_id
+      )
+      SELECT
+        event_date,
+        COUNT(*) * 100 AS est_streams,
+        ROUND(SUM(CASE WHEN result = 'completed' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS completed_rate,
+        ROUND(SUM(CASE WHEN result <> 'completed' AND interrupt_reason = 'timeout' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS timeout_ratio,
+        ROUND(SUM(CASE WHEN result <> 'completed' AND interrupt_reason = 'network' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS network_ratio,
+        ROUND(SUM(CASE WHEN result <> 'completed' AND interrupt_reason = 'server' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS server_ratio,
+        ROUND(percentile_approx(CASE WHEN result = 'completed' THEN first_content_ms END, 0.50), 0) AS p50_first_content_ms,
+        ROUND(percentile_approx(CASE WHEN result = 'completed' THEN first_content_ms END, 0.90), 0) AS p90_first_content_ms,
+        ROUND(percentile_approx(CASE WHEN result = 'completed' THEN total_ms END, 0.90), 0) AS p90_total_ms
+      FROM s
+      GROUP BY event_date
+      ORDER BY event_date ASC
+  msg_failure_breakdown:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH s AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'result' THEN event_param_value END) AS result,
+          MAX(CASE WHEN event_param_key = 'interrupt_reason' THEN event_param_value END) AS interrupt_reason
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'chat_stream_result'
+          AND event_param_key IN ('result', 'interrupt_reason')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+        GROUP BY event_id
+      )
+      SELECT
+        COALESCE(interrupt_reason, 'unclassified') AS interrupt_reason,
+        COUNT(*) * 100 AS est_streams,
+        ROUND(COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (), 0), 6) AS share_of_failures
+      FROM s
+      WHERE result <> 'completed'
+      GROUP BY 1
+      ORDER BY est_streams DESC
+  msg_error_code:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH s AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'result' THEN event_param_value END) AS result,
+          MAX(CASE WHEN event_param_key = 'error_code' THEN event_param_value END) AS error_code,
+          MAX(CASE WHEN event_param_key = 'interrupt_reason' THEN event_param_value END) AS interrupt_reason
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'chat_stream_result'
+          AND event_param_key IN ('result', 'error_code', 'interrupt_reason')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+        GROUP BY event_id
+      )
+      SELECT
+        error_code,
+        COALESCE(interrupt_reason, 'unclassified') AS interrupt_reason,
+        COUNT(*) * 100 AS est_streams,
+        ROUND(COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (), 0), 6) AS share
+      FROM s
+      WHERE result <> 'completed' AND error_code IS NOT NULL AND error_code <> ''
+      GROUP BY 1, 2
+      ORDER BY est_streams DESC
+      LIMIT 20
+  # 按模型：首字耗时现在就能看（chat_stream_first_render 一直带着 chat_service）；
+  # 失败率要等 APP-15643 的 chat_stream_result.chat_service 发版后才有。
+  msg_by_model:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH r AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'chat_service' THEN event_param_value END) AS model,
+          MAX(CASE WHEN event_param_key = 'first_content_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_content_ms,
+          MAX(CASE WHEN event_param_key = 'first_chunk_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_chunk_ms,
+          MAX(CASE WHEN event_param_key = 'is_streaming' THEN event_param_value END) AS is_streaming
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'chat_stream_first_render'
+          AND event_param_key IN ('chat_service', 'first_content_ms', 'first_chunk_ms', 'is_streaming')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+        GROUP BY event_id
+      )
+      SELECT
+        model,
+        COUNT(*) * 100 AS est_renders,
+        ROUND(percentile_approx(first_chunk_ms, 0.50), 0) AS p50_first_chunk_ms,
+        ROUND(percentile_approx(first_content_ms, 0.50), 0) AS p50_first_content_ms,
+        ROUND(percentile_approx(first_content_ms, 0.90), 0) AS p90_first_content_ms,
+        ROUND(SUM(CASE WHEN is_streaming = 'true' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 4) AS streaming_share
+      FROM r
+      WHERE model IS NOT NULL AND model <> ''
+      GROUP BY model
+      HAVING COUNT(*) >= 50
+      ORDER BY est_renders DESC
+      LIMIT 20
+  msg_by_network:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH r AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'first_chunk_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_chunk_ms,
+          MAX(CASE WHEN event_param_key = 'first_content_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_content_ms,
+          MAX(CASE WHEN event_param_key = 'network_type' THEN event_param_value END) AS network_type,
+          MAX(CASE WHEN event_param_key = 'is_streaming' THEN event_param_value END) AS is_streaming
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'chat_stream_first_render'
+          AND event_param_key IN ('first_chunk_ms', 'first_content_ms', 'network_type', 'is_streaming')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+        GROUP BY event_id
+      )
+      SELECT
+        COALESCE(network_type, 'unknown') AS network_type,
+        COALESCE(is_streaming, 'unknown') AS is_streaming,
+        COUNT(*) * 100 AS est_renders,
+        ROUND(percentile_approx(first_chunk_ms, 0.50), 0) AS p50_first_chunk_ms,
+        ROUND(percentile_approx(first_chunk_ms, 0.90), 0) AS p90_first_chunk_ms,
+        ROUND(percentile_approx(first_content_ms, 0.50), 0) AS p50_first_content_ms,
+        ROUND(percentile_approx(first_content_ms, 0.90), 0) AS p90_first_content_ms
+      FROM r
+      GROUP BY 1, 2
+      HAVING COUNT(*) >= 100
+      ORDER BY est_renders DESC
+  msg_error_breakdown:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH e AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'type' THEN event_param_value END) AS err_type,
+          MAX(CASE WHEN event_param_key = 'failure_kind' THEN event_param_value END) AS failure_kind,
+          MAX(CASE WHEN event_param_key = 'errorCode' THEN event_param_value END) AS error_code,
+          MAX(CASE WHEN event_param_key = 'statusCode' THEN event_param_value END) AS status_code,
+          MAX(CASE WHEN event_param_key = 'wsConnected' THEN event_param_value END) AS ws_connected
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'chat_error'
+          AND event_param_key IN ('type', 'failure_kind', 'errorCode', 'statusCode', 'wsConnected')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY event_id
+      )
+      SELECT
+        COALESCE(failure_kind, '(未发版)') AS failure_kind,
+        COALESCE(err_type, 'unknown') AS err_type,
+        COALESCE(error_code, '-') AS error_code,
+        COALESCE(status_code, '-') AS status_code,
+        -- 老版本把布尔序列化成 1/0，新版本是 true/false；归一后再展示。
+        CASE
+          WHEN ws_connected IN ('true', '1') THEN 'true'
+          WHEN ws_connected IN ('false', '0') THEN 'false'
+          ELSE '-'
+        END AS ws_connected,
+        COUNT(*) AS error_count
+      FROM e
+      GROUP BY 1, 2, 3, 4, 5
+      ORDER BY error_count DESC
+      LIMIT 30
+  msg_timeout:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH t AS (
+        SELECT event_date, event_id,
+          MAX(CASE WHEN event_param_key = 'socket_connected' THEN event_param_value END) AS socket_connected,
+          MAX(CASE WHEN event_param_key = 'socket_type' THEN event_param_value END) AS socket_type
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'measurement_chat_message_timeout'
+          AND event_param_key IN ('socket_connected', 'socket_type')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+        GROUP BY event_date, event_id
+      )
+      SELECT
+        event_date,
+        COALESCE(socket_connected, 'unknown') AS socket_connected,
+        COALESCE(socket_type, 'unknown') AS socket_type,
+        COUNT(*) AS timeout_count
+      FROM t
+      GROUP BY 1, 2, 3
+      ORDER BY event_date ASC, timeout_count DESC
+  # ---------- 日活版本占比 ----------
+  dau_version_daily:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      SELECT event_date, app_version, COUNT(DISTINCT user_id) AS dau
+      FROM dws.dws_user_daily_summary_di
+      WHERE platform = 'Android'
+        AND is_app_active = 1
+        AND event_date >= :date_start
+        AND (:use_date_end = 0 OR event_date <= :date_end)
+        AND app_version IS NOT NULL AND app_version <> ''
+      GROUP BY event_date, app_version
+      ORDER BY event_date ASC
+  dau_version_share:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      SELECT app_version, COUNT(DISTINCT user_id) AS dau
+      FROM dws.dws_user_daily_summary_di
+      WHERE platform = 'Android'
+        AND is_app_active = 1
+        AND event_date >= :date_start
+        AND (:use_date_end = 0 OR event_date <= :date_end)
+        AND app_version IS NOT NULL AND app_version <> ''
+      GROUP BY app_version
+      ORDER BY dau DESC
+  # ---------- 商业化埋点 ----------
+  tracking_business_daily:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      SELECT
+        p.event_date, p.dau, p.total_revenue, p.ad_revenue,
+        p.sub_revenue AS subscription_revenue,
+        p.flux_revenue AS recharge_revenue,
+        p.iaa_ecpm, p.ad_impression_cnt, p.etl_time
+      FROM ads.ads_app_kpi_platform_daily_summary_df p
+      WHERE p.operating_system = 'Android'
+        AND p.event_date >= :date_start
+        AND (:use_date_end = 0 OR p.event_date <= :date_end)
+      ORDER BY p.event_date ASC
+  # ---------- 设备分布 ----------
+  device_summary:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      SELECT
+        COUNT(DISTINCT user_pseudo_id) AS total_users,
+        COUNT(DISTINCT get_json_string(device, '$.mobile_model_name')) AS distinct_models,
+        COUNT(DISTINCT get_json_string(device, '$.mobile_brand_name')) AS distinct_brands
+      FROM ods_original.ods_clickstream_app_event_di
+      WHERE event_name = 'app_launch_cold'
+        AND platform = 'Android'
+        AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+        AND event_date >= :date_start
+        AND (:use_date_end = 0 OR event_date <= :date_end)
+  device_brand_share:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      SELECT
+        get_json_string(device, '$.mobile_brand_name') AS brand,
+        COUNT(DISTINCT user_pseudo_id) AS users
+      FROM ods_original.ods_clickstream_app_event_di
+      WHERE event_name = 'app_launch_cold'
+        AND platform = 'Android'
+        AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+        AND event_date >= :date_start
+        AND (:use_date_end = 0 OR event_date <= :date_end)
+        AND get_json_string(device, '$.mobile_brand_name') IS NOT NULL
+        AND get_json_string(device, '$.mobile_brand_name') <> ''
+      GROUP BY brand
+      ORDER BY users DESC
+      LIMIT 15
+  device_model_share:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      SELECT
+        get_json_string(device, '$.mobile_brand_name') AS brand,
+        get_json_string(device, '$.mobile_model_name') AS model,
+        COUNT(DISTINCT user_pseudo_id) AS users
+      FROM ods_original.ods_clickstream_app_event_di
+      WHERE event_name = 'app_launch_cold'
+        AND platform = 'Android'
+        AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+        AND event_date >= :date_start
+        AND (:use_date_end = 0 OR event_date <= :date_end)
+        AND get_json_string(device, '$.mobile_model_name') IS NOT NULL
+        AND get_json_string(device, '$.mobile_model_name') <> ''
+      GROUP BY brand, model
+      ORDER BY users DESC
+      LIMIT 30
+  device_os_share:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      SELECT
+        get_json_string(device, '$.operating_system_version') AS os_version,
+        COUNT(DISTINCT user_pseudo_id) AS users
+      FROM ods_original.ods_clickstream_app_event_di
+      WHERE event_name = 'app_launch_cold'
+        AND platform = 'Android'
+        AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+        AND event_date >= :date_start
+        AND (:use_date_end = 0 OR event_date <= :date_end)
+        AND get_json_string(device, '$.operating_system_version') IS NOT NULL
+        AND get_json_string(device, '$.operating_system_version') <> ''
+      GROUP BY os_version
+      ORDER BY users DESC
+      LIMIT 15
+  # ---------- FPS / 内存（app_performance，APP-15329 发版后生效） ----------
+  perf_availability:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      SELECT
+        COUNT(*) AS android_samples,
+        MIN(event_date) AS first_date,
+        MAX(event_date) AS last_date
+      FROM ods_original.ods_clickstream_app_event_di
+      WHERE event_name = 'app_performance'
+        AND platform = 'Android'
+        AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+        AND event_date >= :date_start
+        AND (:use_date_end = 0 OR event_date <= :date_end)
+  perf_percentiles:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH ids AS (
+        SELECT event_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'app_performance'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+      ),
+      p AS (
+        SELECT pa.event_id,
+          MAX(CASE WHEN pa.event_param_key = 'fps' THEN CAST(pa.event_param_value AS DOUBLE) END) AS fps,
+          MAX(CASE WHEN pa.event_param_key = 'memory_mb' THEN CAST(pa.event_param_value AS DOUBLE) END) AS memory_mb,
+          MAX(CASE WHEN pa.event_param_key = 'java_heap_used_mb' THEN CAST(pa.event_param_value AS DOUBLE) END) AS java_heap_mb,
+          MAX(CASE WHEN pa.event_param_key = 'native_heap_used_mb' THEN CAST(pa.event_param_value AS DOUBLE) END) AS native_heap_mb
+        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        JOIN ids ON ids.event_id = pa.event_id
+        WHERE pa.event_name = 'app_performance'
+          AND pa.event_param_key IN ('fps', 'memory_mb', 'java_heap_used_mb', 'native_heap_used_mb')
+          AND pa.event_date >= :date_start
+          AND (:use_date_end = 0 OR pa.event_date <= :date_end)
+        GROUP BY pa.event_id
+      )
+      SELECT
+        COUNT(*) AS samples,
+        ROUND(AVG(fps), 2) AS avg_fps,
+        ROUND(percentile_approx(fps, 0.10), 1) AS fps_p90,
+        ROUND(percentile_approx(fps, 0.05), 1) AS fps_p95,
+        ROUND(percentile_approx(memory_mb, 0.50), 1) AS mem_p50,
+        ROUND(percentile_approx(memory_mb, 0.90), 1) AS mem_p90,
+        ROUND(percentile_approx(memory_mb, 0.95), 1) AS mem_p95,
+        ROUND(percentile_approx(java_heap_mb, 0.90), 1) AS java_heap_p90,
+        ROUND(percentile_approx(native_heap_mb, 0.90), 1) AS native_heap_p90
+      FROM p
+      WHERE fps IS NOT NULL OR memory_mb IS NOT NULL
+
+  # ---------- WebSocket 连接（APP-15643，需等版本发版后才有数据） ----------
+  # ws_* 事件名 iOS 也在用，所以每个数据集都必须 JOIN 事件表做平台过滤，
+  # 不能只查参数表——参数表没有 platform 列。
+  ws_overview:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH e AS (
+        SELECT event_name, user_pseudo_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name IN ('ws_connect_attempt', 'ws_connect_success', 'ws_connect_error', 'ws_connect_stalled', 'ws_disconnect')
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+      )
+      SELECT
+        SUM(CASE WHEN event_name = 'ws_connect_attempt' THEN 1 ELSE 0 END) AS attempts,
+        SUM(CASE WHEN event_name = 'ws_connect_success' THEN 1 ELSE 0 END) AS successes,
+        SUM(CASE WHEN event_name = 'ws_connect_error' THEN 1 ELSE 0 END) AS errors,
+        SUM(CASE WHEN event_name = 'ws_connect_stalled' THEN 1 ELSE 0 END) AS stalled,
+        SUM(CASE WHEN event_name = 'ws_disconnect' THEN 1 ELSE 0 END) AS disconnects,
+        COUNT(DISTINCT CASE WHEN event_name = 'ws_connect_attempt' THEN user_pseudo_id END) AS attempt_users,
+        COUNT(DISTINCT CASE WHEN event_name = 'ws_connect_stalled' THEN user_pseudo_id END) AS stalled_users,
+        ROUND(SUM(CASE WHEN event_name = 'ws_connect_success' THEN 1 ELSE 0 END)
+              / NULLIF(SUM(CASE WHEN event_name = 'ws_connect_attempt' THEN 1 ELSE 0 END), 0), 6) AS connect_success_rate,
+        ROUND(COUNT(DISTINCT CASE WHEN event_name = 'ws_connect_stalled' THEN user_pseudo_id END)
+              / NULLIF(COUNT(DISTINCT CASE WHEN event_name = 'ws_connect_attempt' THEN user_pseudo_id END), 0), 6) AS stalled_user_rate
+      FROM e
+  ws_daily:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      SELECT
+        event_date,
+        SUM(CASE WHEN event_name = 'ws_connect_attempt' THEN 1 ELSE 0 END) AS attempts,
+        SUM(CASE WHEN event_name = 'ws_connect_success' THEN 1 ELSE 0 END) AS successes,
+        SUM(CASE WHEN event_name = 'ws_connect_error' THEN 1 ELSE 0 END) AS errors,
+        SUM(CASE WHEN event_name = 'ws_connect_stalled' THEN 1 ELSE 0 END) AS stalled,
+        ROUND(SUM(CASE WHEN event_name = 'ws_connect_success' THEN 1 ELSE 0 END)
+              / NULLIF(SUM(CASE WHEN event_name = 'ws_connect_attempt' THEN 1 ELSE 0 END), 0), 6) AS connect_success_rate,
+        ROUND(SUM(CASE WHEN event_name = 'ws_connect_error' THEN 1 ELSE 0 END)
+              / NULLIF(SUM(CASE WHEN event_name = 'ws_connect_attempt' THEN 1 ELSE 0 END), 0), 6) AS error_rate
+      FROM ods_original.ods_clickstream_app_event_di
+      WHERE event_name IN ('ws_connect_attempt', 'ws_connect_success', 'ws_connect_error', 'ws_connect_stalled')
+        AND platform = 'Android'
+        AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+        AND event_date >= :date_start
+        AND (:use_date_end = 0 OR event_date <= :date_end)
+      GROUP BY event_date
+      ORDER BY event_date ASC
+  ws_duration:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH ids AS (
+        SELECT event_id, event_name
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name IN ('ws_connect_success', 'ws_disconnect', 'ws_connect_stalled')
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+      ),
+      p AS (
+        SELECT ids.event_name, pa.event_id,
+          MAX(CASE WHEN pa.event_param_key = 'connect_duration_ms' THEN CAST(pa.event_param_value AS DOUBLE) END) AS connect_ms,
+          MAX(CASE WHEN pa.event_param_key = 'session_duration_ms' THEN CAST(pa.event_param_value AS DOUBLE) END) AS session_ms,
+          MAX(CASE WHEN pa.event_param_key = 'stalled_ms' THEN CAST(pa.event_param_value AS DOUBLE) END) AS stalled_ms,
+          MAX(CASE WHEN pa.event_param_key = 'is_reconnect' THEN pa.event_param_value END) AS is_reconnect
+        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        JOIN ids ON ids.event_id = pa.event_id
+        WHERE pa.event_param_key IN ('connect_duration_ms', 'session_duration_ms', 'stalled_ms', 'is_reconnect')
+          AND pa.event_date >= :date_start
+          AND (:use_date_end = 0 OR pa.event_date <= :date_end)
+        GROUP BY ids.event_name, pa.event_id
+      )
+      SELECT
+        ROUND(percentile_approx(connect_ms, 0.50), 0) AS connect_p50,
+        ROUND(percentile_approx(connect_ms, 0.90), 0) AS connect_p90,
+        ROUND(percentile_approx(connect_ms, 0.99), 0) AS connect_p99,
+        ROUND(percentile_approx(CASE WHEN is_reconnect = 'true' THEN connect_ms END, 0.50), 0) AS reconnect_p50,
+        ROUND(percentile_approx(CASE WHEN is_reconnect = 'false' THEN connect_ms END, 0.50), 0) AS first_connect_p50,
+        ROUND(percentile_approx(session_ms, 0.50), 0) AS session_p50,
+        ROUND(percentile_approx(session_ms, 0.90), 0) AS session_p90,
+        ROUND(percentile_approx(stalled_ms, 0.50), 0) AS stalled_p50,
+        ROUND(percentile_approx(stalled_ms, 0.90), 0) AS stalled_p90
+      FROM p
+  ws_reason:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH ids AS (
+        SELECT event_id, event_name
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name IN ('ws_connect_error', 'ws_disconnect')
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+      ),
+      p AS (
+        SELECT ids.event_name, pa.event_id,
+          MAX(CASE WHEN pa.event_param_key = 'reason' THEN pa.event_param_value END) AS reason
+        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        JOIN ids ON ids.event_id = pa.event_id
+        WHERE pa.event_param_key = 'reason'
+          AND pa.event_date >= :date_start
+          AND (:use_date_end = 0 OR pa.event_date <= :date_end)
+        GROUP BY ids.event_name, pa.event_id
+      )
+      SELECT
+        event_name,
+        COALESCE(reason, 'unknown') AS reason,
+        COUNT(*) AS cnt,
+        ROUND(COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (PARTITION BY event_name), 0), 6) AS share
+      FROM p
+      GROUP BY 1, 2
+      ORDER BY event_name ASC, cnt DESC
+
+  # ---------- 支付漏斗（APP-15643，需等版本发版后才有数据） ----------
+  # payment_step 是 iOS 已有的事件名，Android 是新增；两端 schema 各自演进，
+  # 必须靠 JOIN 事件表的 platform 过滤，不能靠 schema_version 区分。
+  pay_step:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH ids AS (
+        SELECT event_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'payment_step'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+      ),
+      p AS (
+        SELECT pa.event_id,
+          MAX(CASE WHEN pa.event_param_key = 'step' THEN pa.event_param_value END) AS step,
+          MAX(CASE WHEN pa.event_param_key = 'status' THEN pa.event_param_value END) AS status,
+          MAX(CASE WHEN pa.event_param_key = 'payment_flow_id' THEN pa.event_param_value END) AS flow_id,
+          MAX(CASE WHEN pa.event_param_key = 'flow_origin' THEN pa.event_param_value END) AS flow_origin,
+          MAX(CASE WHEN pa.event_param_key = 'duration_ms' THEN CAST(pa.event_param_value AS DOUBLE) END) AS duration_ms
+        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        JOIN ids ON ids.event_id = pa.event_id
+        WHERE pa.event_param_key IN ('step', 'status', 'payment_flow_id', 'flow_origin', 'duration_ms')
+          AND pa.event_date >= :date_start
+          AND (:use_date_end = 0 OR pa.event_date <= :date_end)
+        GROUP BY pa.event_id
+      )
+      SELECT
+        step,
+        COUNT(DISTINCT flow_id) AS flows,
+        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_cnt,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_cnt,
+        SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_cnt,
+        SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped_cnt,
+        SUM(CASE WHEN status = 'timeout' THEN 1 ELSE 0 END) AS timeout_cnt,
+        SUM(CASE WHEN status = 'started' THEN 1 ELSE 0 END) AS started_cnt,
+        ROUND(percentile_approx(duration_ms, 0.50), 0) AS p50_ms,
+        ROUND(percentile_approx(duration_ms, 0.90), 0) AS p90_ms
+      FROM p
+      WHERE step IS NOT NULL
+      GROUP BY step
+      ORDER BY flows DESC
+  pay_funnel:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH ids AS (
+        SELECT event_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'payment_step'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+      ),
+      p AS (
+        SELECT pa.event_id,
+          MAX(CASE WHEN pa.event_param_key = 'step' THEN pa.event_param_value END) AS step,
+          MAX(CASE WHEN pa.event_param_key = 'status' THEN pa.event_param_value END) AS status,
+          MAX(CASE WHEN pa.event_param_key = 'payment_flow_id' THEN pa.event_param_value END) AS flow_id,
+          MAX(CASE WHEN pa.event_param_key = 'flow_origin' THEN pa.event_param_value END) AS flow_origin
+        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        JOIN ids ON ids.event_id = pa.event_id
+        WHERE pa.event_param_key IN ('step', 'status', 'payment_flow_id', 'flow_origin')
+          AND pa.event_date >= :date_start
+          AND (:use_date_end = 0 OR pa.event_date <= :date_end)
+        GROUP BY pa.event_id
+      ),
+      f AS (
+        SELECT flow_id,
+          MAX(CASE WHEN step = 'scene_enter' AND status = 'success' THEN 1 ELSE 0 END) AS hit_scene,
+          MAX(CASE WHEN step = 'billing_product_fetch' AND status = 'success' THEN 1 ELSE 0 END) AS hit_fetch,
+          MAX(CASE WHEN step = 'purchase_intent' AND status = 'success' THEN 1 ELSE 0 END) AS hit_intent,
+          MAX(CASE WHEN step = 'checkout' AND status = 'success' THEN 1 ELSE 0 END) AS hit_checkout,
+          MAX(CASE WHEN step = 'checkout' AND status = 'cancelled' THEN 1 ELSE 0 END) AS hit_cancel,
+          MAX(CASE WHEN step = 'receipt_save' AND status = 'success' THEN 1 ELSE 0 END) AS hit_receipt,
+          MAX(CASE WHEN step = 'transaction_finish' AND status = 'success' THEN 1 ELSE 0 END) AS hit_finish
+        FROM p
+        WHERE flow_id IS NOT NULL AND flow_origin = 'foreground'
+        GROUP BY flow_id
+      )
+      SELECT
+        COUNT(*) AS flows,
+        SUM(hit_scene) AS scene_enter,
+        SUM(hit_fetch) AS billing_product_fetch,
+        SUM(hit_intent) AS purchase_intent,
+        SUM(hit_checkout) AS checkout,
+        SUM(hit_cancel) AS cancelled,
+        SUM(hit_receipt) AS receipt_save,
+        SUM(hit_finish) AS transaction_finish,
+        ROUND(SUM(hit_finish) / NULLIF(SUM(hit_scene), 0), 6) AS scene_to_finish_rate,
+        ROUND(SUM(hit_checkout) / NULLIF(SUM(hit_intent), 0), 6) AS intent_to_checkout_rate,
+        ROUND(SUM(hit_cancel) / NULLIF(SUM(hit_intent), 0), 6) AS cancel_rate
+      FROM f
+  pay_failure:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH ids AS (
+        SELECT event_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'payment_step'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+      ),
+      p AS (
+        SELECT pa.event_id,
+          MAX(CASE WHEN pa.event_param_key = 'step' THEN pa.event_param_value END) AS step,
+          MAX(CASE WHEN pa.event_param_key = 'status' THEN pa.event_param_value END) AS status,
+          MAX(CASE WHEN pa.event_param_key = 'failure_reason' THEN pa.event_param_value END) AS failure_reason,
+          MAX(CASE WHEN pa.event_param_key = 'billing_response_code' THEN pa.event_param_value END) AS billing_response_code
+        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        JOIN ids ON ids.event_id = pa.event_id
+        WHERE pa.event_param_key IN ('step', 'status', 'failure_reason', 'billing_response_code')
+          AND pa.event_date >= :date_start
+          AND (:use_date_end = 0 OR pa.event_date <= :date_end)
+        GROUP BY pa.event_id
+      )
+      SELECT
+        step,
+        status,
+        COALESCE(failure_reason, '—') AS failure_reason,
+        COALESCE(billing_response_code, '—') AS billing_response_code,
+        COUNT(*) AS cnt
+      FROM p
+      WHERE status IN ('failed', 'cancelled', 'timeout', 'skipped')
+      GROUP BY 1, 2, 3, 4
+      ORDER BY cnt DESC
+      LIMIT 40
+  pay_daily:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH ids AS (
+        SELECT event_id, event_date
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name = 'payment_step'
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+      ),
+      p AS (
+        SELECT ids.event_date, pa.event_id,
+          MAX(CASE WHEN pa.event_param_key = 'step' THEN pa.event_param_value END) AS step,
+          MAX(CASE WHEN pa.event_param_key = 'status' THEN pa.event_param_value END) AS status
+        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        JOIN ids ON ids.event_id = pa.event_id
+        WHERE pa.event_param_key IN ('step', 'status')
+          AND pa.event_date >= :date_start
+          AND (:use_date_end = 0 OR pa.event_date <= :date_end)
+        GROUP BY ids.event_date, pa.event_id
+      )
+      SELECT
+        event_date,
+        SUM(CASE WHEN step = 'catalog_load' AND status = 'success' THEN 1 ELSE 0 END) AS catalog_ok,
+        SUM(CASE WHEN step = 'catalog_load' AND status = 'failed' THEN 1 ELSE 0 END) AS catalog_failed,
+        SUM(CASE WHEN step = 'checkout' AND status = 'success' THEN 1 ELSE 0 END) AS checkout_ok,
+        SUM(CASE WHEN step = 'checkout' AND status = 'cancelled' THEN 1 ELSE 0 END) AS checkout_cancelled,
+        SUM(CASE WHEN step = 'checkout' AND status = 'failed' THEN 1 ELSE 0 END) AS checkout_failed,
+        SUM(CASE WHEN step = 'transaction_finish' AND status = 'success' THEN 1 ELSE 0 END) AS finished,
+        ROUND(SUM(CASE WHEN step = 'catalog_load' AND status = 'failed' THEN 1 ELSE 0 END)
+              / NULLIF(SUM(CASE WHEN step = 'catalog_load' AND status IN ('success', 'failed') THEN 1 ELSE 0 END), 0), 6) AS catalog_fail_rate
+      FROM p
+      GROUP BY event_date
+      ORDER BY event_date ASC
+
+  # ---------- VPN 维度（APP-15643，需等版本发版后才有数据） ----------
+  # is_vpn 与 network_type 并列上报：走 WiFi 的 VPN 仍然是 wifi，历史曲线不断档，
+  # 两个维度可以交叉。布尔按仓库既有口径归一（老版本可能序列化成 1/0）。
+  msg_vpn_split:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH s AS (
+        SELECT event_id,
+          MAX(CASE WHEN event_param_key = 'result' THEN event_param_value END) AS result,
+          MAX(CASE WHEN event_param_key = 'interrupt_reason' THEN event_param_value END) AS interrupt_reason,
+          MAX(CASE WHEN event_param_key = 'total_ms' THEN CAST(event_param_value AS DOUBLE) END) AS total_ms,
+          MAX(CASE WHEN event_param_key = 'first_content_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_content_ms,
+          MAX(CASE WHEN event_param_key = 'is_vpn' THEN event_param_value END) AS is_vpn
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_name = 'chat_stream_result'
+          AND event_param_key IN ('result', 'interrupt_reason', 'total_ms', 'first_content_ms', 'is_vpn')
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+          AND crc32(event_id) % 100 = 0
+        GROUP BY event_id
+      )
+      SELECT
+        CASE
+          WHEN is_vpn IN ('true', '1') THEN 'VPN'
+          WHEN is_vpn IN ('false', '0') THEN '直连'
+          ELSE '(未发版)'
+        END AS vpn_state,
+        COUNT(*) * 100 AS est_streams,
+        ROUND(COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (), 0), 6) AS share_of_streams,
+        ROUND(SUM(CASE WHEN result = 'completed' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS completed_rate,
+        ROUND(SUM(CASE WHEN result <> 'completed' AND interrupt_reason = 'timeout' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS timeout_ratio,
+        ROUND(SUM(CASE WHEN result <> 'completed' AND interrupt_reason = 'network' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS network_ratio,
+        ROUND(SUM(CASE WHEN result <> 'completed' AND interrupt_reason = 'server' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 6) AS server_ratio,
+        ROUND(percentile_approx(CASE WHEN result = 'completed' THEN first_content_ms END, 0.50), 0) AS p50_first_content_ms,
+        ROUND(percentile_approx(CASE WHEN result = 'completed' THEN first_content_ms END, 0.90), 0) AS p90_first_content_ms,
+        ROUND(percentile_approx(CASE WHEN result = 'completed' THEN total_ms END, 0.90), 0) AS p90_total_ms
+      FROM s
+      GROUP BY 1
+      ORDER BY est_streams DESC
+  ws_vpn_split:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH ids AS (
+        SELECT event_id, event_name
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_name IN ('ws_connect_attempt', 'ws_connect_success', 'ws_connect_error', 'ws_connect_stalled')
+          AND platform = 'Android'
+          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND event_date >= :date_start
+          AND (:use_date_end = 0 OR event_date <= :date_end)
+      ),
+      p AS (
+        SELECT ids.event_name, pa.event_id,
+          MAX(CASE WHEN pa.event_param_key = 'is_vpn' THEN pa.event_param_value END) AS is_vpn
+        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        JOIN ids ON ids.event_id = pa.event_id
+        WHERE pa.event_param_key = 'is_vpn'
+          AND pa.event_date >= :date_start
+          AND (:use_date_end = 0 OR pa.event_date <= :date_end)
+        GROUP BY ids.event_name, pa.event_id
+      )
+      SELECT
+        CASE
+          WHEN is_vpn IN ('true', '1') THEN 'VPN'
+          WHEN is_vpn IN ('false', '0') THEN '直连'
+          ELSE '(未发版)'
+        END AS vpn_state,
+        SUM(CASE WHEN event_name = 'ws_connect_attempt' THEN 1 ELSE 0 END) AS attempts,
+        SUM(CASE WHEN event_name = 'ws_connect_success' THEN 1 ELSE 0 END) AS successes,
+        SUM(CASE WHEN event_name = 'ws_connect_error' THEN 1 ELSE 0 END) AS errors,
+        SUM(CASE WHEN event_name = 'ws_connect_stalled' THEN 1 ELSE 0 END) AS stalled,
+        ROUND(SUM(CASE WHEN event_name = 'ws_connect_success' THEN 1 ELSE 0 END)
+              / NULLIF(SUM(CASE WHEN event_name = 'ws_connect_attempt' THEN 1 ELSE 0 END), 0), 6) AS connect_success_rate,
+        ROUND(SUM(CASE WHEN event_name = 'ws_connect_error' THEN 1 ELSE 0 END)
+              / NULLIF(SUM(CASE WHEN event_name = 'ws_connect_attempt' THEN 1 ELSE 0 END), 0), 6) AS error_rate
+      FROM p
+      GROUP BY 1
+      ORDER BY attempts DESC
