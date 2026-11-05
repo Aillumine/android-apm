@@ -967,6 +967,7 @@ datasets:
         WHERE event_name = 'app_performance'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND crc32(event_id) % 100 = 0
           AND event_date >= :date_start
           AND (:use_date_end = 0 OR event_date <= :date_end)
       ),
@@ -980,6 +981,7 @@ datasets:
         JOIN ids ON ids.event_id = pa.event_id
         WHERE pa.event_name = 'app_performance'
           AND pa.event_param_key IN ('fps', 'memory_mb', 'java_heap_used_mb', 'native_heap_used_mb')
+          AND crc32(pa.event_id) % 100 = 0
           AND pa.event_date >= :date_start
           AND (:use_date_end = 0 OR pa.event_date <= :date_end)
         GROUP BY pa.event_id
@@ -1066,7 +1068,8 @@ datasets:
           MAX(CASE WHEN pa.event_param_key = 'is_reconnect' THEN pa.event_param_value END) AS is_reconnect
         FROM ods_original.ods_clickstream_app_event_parameter_hi pa
         JOIN ids ON ids.event_id = pa.event_id
-        WHERE pa.event_param_key IN ('connect_duration_ms', 'session_duration_ms', 'stalled_ms', 'is_reconnect')
+        WHERE pa.event_name IN ('ws_connect_success', 'ws_disconnect', 'ws_connect_stalled')
+          AND pa.event_param_key IN ('connect_duration_ms', 'session_duration_ms', 'stalled_ms', 'is_reconnect')
           AND pa.event_date >= :date_start
           AND (:use_date_end = 0 OR pa.event_date <= :date_end)
         GROUP BY ids.event_name, pa.event_id
@@ -1095,21 +1098,25 @@ datasets:
           AND (:use_date_end = 0 OR event_date <= :date_end)
       ),
       p AS (
-        SELECT ids.event_name, pa.event_id,
+        SELECT pa.event_id,
           MAX(CASE WHEN pa.event_param_key = 'reason' THEN pa.event_param_value END) AS reason
         FROM ods_original.ods_clickstream_app_event_parameter_hi pa
-        JOIN ids ON ids.event_id = pa.event_id
-        WHERE pa.event_param_key = 'reason'
+        WHERE pa.event_name IN ('ws_connect_error', 'ws_disconnect')
+          AND pa.event_param_key = 'reason'
           AND pa.event_date >= :date_start
           AND (:use_date_end = 0 OR pa.event_date <= :date_end)
-        GROUP BY ids.event_name, pa.event_id
+        GROUP BY pa.event_id
+      ),
+      joined AS (
+        SELECT ids.event_name, p.reason
+        FROM p JOIN ids ON ids.event_id = p.event_id
       )
       SELECT
         event_name,
         COALESCE(reason, 'unknown') AS reason,
         COUNT(*) AS cnt,
         ROUND(COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (PARTITION BY event_name), 0), 6) AS share
-      FROM p
+      FROM joined
       GROUP BY 1, 2
       ORDER BY event_name ASC, cnt DESC
 
@@ -1119,14 +1126,25 @@ datasets:
   pay_step:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH ids AS (
-        SELECT event_id
-        FROM ods_original.ods_clickstream_app_event_di
-        WHERE event_name = 'payment_step'
-          AND platform = 'Android'
-          AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
-          AND event_date >= :date_start
-          AND (:use_date_end = 0 OR event_date <= :date_end)
+      WITH wanted AS (
+        SELECT pa.event_id
+        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        WHERE pa.event_name = 'payment_step'
+          AND pa.event_param_key = 'step'
+          AND pa.event_param_value <> 'catalog_load'
+          AND pa.event_date >= :date_start
+          AND (:use_date_end = 0 OR pa.event_date <= :date_end)
+        GROUP BY pa.event_id
+      ),
+      ids AS (
+        SELECT DISTINCT d.event_id
+        FROM ods_original.ods_clickstream_app_event_di d
+        JOIN wanted w ON w.event_id = d.event_id
+        WHERE d.event_name = 'payment_step'
+          AND d.platform = 'Android'
+          AND get_json_string(d.app_info, '$.id') = 'com.flow.mobile'
+          AND d.event_date >= :date_start
+          AND (:use_date_end = 0 OR d.event_date <= :date_end)
       ),
       p AS (
         SELECT pa.event_id,
@@ -1137,7 +1155,8 @@ datasets:
           MAX(CASE WHEN pa.event_param_key = 'duration_ms' THEN CAST(pa.event_param_value AS DOUBLE) END) AS duration_ms
         FROM ods_original.ods_clickstream_app_event_parameter_hi pa
         JOIN ids ON ids.event_id = pa.event_id
-        WHERE pa.event_param_key IN ('step', 'status', 'payment_flow_id', 'flow_origin', 'duration_ms')
+        WHERE pa.event_name = 'payment_step'
+          AND pa.event_param_key IN ('step', 'status', 'payment_flow_id', 'flow_origin', 'duration_ms')
           AND pa.event_date >= :date_start
           AND (:use_date_end = 0 OR pa.event_date <= :date_end)
         GROUP BY pa.event_id
@@ -1177,7 +1196,8 @@ datasets:
           MAX(CASE WHEN pa.event_param_key = 'flow_origin' THEN pa.event_param_value END) AS flow_origin
         FROM ods_original.ods_clickstream_app_event_parameter_hi pa
         JOIN ids ON ids.event_id = pa.event_id
-        WHERE pa.event_param_key IN ('step', 'status', 'payment_flow_id', 'flow_origin')
+        WHERE pa.event_name = 'payment_step'
+          AND pa.event_param_key IN ('step', 'status', 'payment_flow_id', 'flow_origin')
           AND pa.event_date >= :date_start
           AND (:use_date_end = 0 OR pa.event_date <= :date_end)
         GROUP BY pa.event_id
@@ -1228,7 +1248,8 @@ datasets:
           MAX(CASE WHEN pa.event_param_key = 'billing_response_code' THEN pa.event_param_value END) AS billing_response_code
         FROM ods_original.ods_clickstream_app_event_parameter_hi pa
         JOIN ids ON ids.event_id = pa.event_id
-        WHERE pa.event_param_key IN ('step', 'status', 'failure_reason', 'billing_response_code')
+        WHERE pa.event_name = 'payment_step'
+          AND pa.event_param_key IN ('step', 'status', 'failure_reason', 'billing_response_code')
           AND pa.event_date >= :date_start
           AND (:use_date_end = 0 OR pa.event_date <= :date_end)
         GROUP BY pa.event_id
@@ -1262,7 +1283,8 @@ datasets:
           MAX(CASE WHEN pa.event_param_key = 'status' THEN pa.event_param_value END) AS status
         FROM ods_original.ods_clickstream_app_event_parameter_hi pa
         JOIN ids ON ids.event_id = pa.event_id
-        WHERE pa.event_param_key IN ('step', 'status')
+        WHERE pa.event_name = 'payment_step'
+          AND pa.event_param_key IN ('step', 'status')
           AND pa.event_date >= :date_start
           AND (:use_date_end = 0 OR pa.event_date <= :date_end)
         GROUP BY ids.event_date, pa.event_id
@@ -1271,6 +1293,7 @@ datasets:
         event_date,
         SUM(CASE WHEN step = 'catalog_load' AND status = 'success' THEN 1 ELSE 0 END) AS catalog_ok,
         SUM(CASE WHEN step = 'catalog_load' AND status = 'failed' THEN 1 ELSE 0 END) AS catalog_failed,
+        SUM(CASE WHEN step = 'catalog_load' AND status = 'skipped' THEN 1 ELSE 0 END) AS catalog_skipped,
         SUM(CASE WHEN step = 'checkout' AND status = 'success' THEN 1 ELSE 0 END) AS checkout_ok,
         SUM(CASE WHEN step = 'checkout' AND status = 'cancelled' THEN 1 ELSE 0 END) AS checkout_cancelled,
         SUM(CASE WHEN step = 'checkout' AND status = 'failed' THEN 1 ELSE 0 END) AS checkout_failed,
@@ -1333,14 +1356,18 @@ datasets:
           AND (:use_date_end = 0 OR event_date <= :date_end)
       ),
       p AS (
-        SELECT ids.event_name, pa.event_id,
+        SELECT pa.event_id,
           MAX(CASE WHEN pa.event_param_key = 'is_vpn' THEN pa.event_param_value END) AS is_vpn
         FROM ods_original.ods_clickstream_app_event_parameter_hi pa
-        JOIN ids ON ids.event_id = pa.event_id
-        WHERE pa.event_param_key = 'is_vpn'
+        WHERE pa.event_name IN ('ws_connect_attempt', 'ws_connect_success', 'ws_connect_error', 'ws_connect_stalled')
+          AND pa.event_param_key = 'is_vpn'
           AND pa.event_date >= :date_start
           AND (:use_date_end = 0 OR pa.event_date <= :date_end)
-        GROUP BY ids.event_name, pa.event_id
+        GROUP BY pa.event_id
+      ),
+      joined AS (
+        SELECT ids.event_name, p.is_vpn
+        FROM p JOIN ids ON ids.event_id = p.event_id
       )
       SELECT
         CASE
@@ -1356,6 +1383,52 @@ datasets:
               / NULLIF(SUM(CASE WHEN event_name = 'ws_connect_attempt' THEN 1 ELSE 0 END), 0), 6) AS connect_success_rate,
         ROUND(SUM(CASE WHEN event_name = 'ws_connect_error' THEN 1 ELSE 0 END)
               / NULLIF(SUM(CASE WHEN event_name = 'ws_connect_attempt' THEN 1 ELSE 0 END), 0), 6) AS error_rate
-      FROM p
+      FROM joined
       GROUP BY 1
       ORDER BY attempts DESC
+
+  # ---------- ANR 归因（保留完整 longMsg 分片，默认最近两个完整日期） ----------
+  anr_payload:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH anr_ids AS (
+        SELECT p.event_date, p.event_id
+        FROM ods_original.ods_clickstream_app_event_parameter_hi p
+        WHERE p.event_date >= :date_start
+          AND (:use_date_end = 0 OR p.event_date <= :date_end)
+          AND p.event_name = 'app_crash'
+          AND p.event_param_key = 'anr_status'
+          AND p.event_param_value IN ('captured', 'missing_main_stack')
+        GROUP BY p.event_date, p.event_id
+      )
+      SELECT p.event_date, p.event_id, p.event_timestamp,
+        p.event_param_key, p.event_param_value
+      FROM ods_original.ods_clickstream_app_event_parameter_hi p
+      JOIN anr_ids a ON a.event_date = p.event_date AND a.event_id = p.event_id
+      WHERE p.event_date >= :date_start
+        AND (:use_date_end = 0 OR p.event_date <= :date_end)
+        AND p.event_name = 'app_crash'
+        AND (p.event_param_key IN ('anr_status', 'device_ram_mb')
+             OR p.event_param_key LIKE 'anr_data_v1_%')
+  anr_details:
+    params: [date_start, date_end, use_date_end]
+    sql: |
+      WITH anr_ids AS (
+        SELECT p.event_date, p.event_id
+        FROM ods_original.ods_clickstream_app_event_parameter_hi p
+        WHERE p.event_date >= :date_start
+          AND (:use_date_end = 0 OR p.event_date <= :date_end)
+          AND p.event_name = 'app_crash'
+          AND p.event_param_key = 'anr_status'
+          AND p.event_param_value IN ('captured', 'missing_main_stack')
+        GROUP BY p.event_date, p.event_id
+      )
+      SELECT a.event_date, a.event_id, d.event_timestamp,
+        CAST(d.app_info AS STRING) AS app_info_json,
+        CAST(d.device AS STRING) AS device_json, d.platform
+      FROM anr_ids a
+      LEFT JOIN ods_original.ods_clickstream_app_event_di d
+        ON d.event_date = a.event_date AND d.event_id = a.event_id
+        AND d.event_name = 'app_crash' AND d.platform = 'Android'
+      WHERE a.event_date >= :date_start
+        AND (:use_date_end = 0 OR a.event_date <= :date_end)
