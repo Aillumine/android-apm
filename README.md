@@ -8,6 +8,8 @@ The default range is the previous two Beijing calendar dates. At 08:00 Asia/Shan
 
 The browser fetches the compressed `prefetch/latest.json.gz` snapshot once at startup. A matching default range and thresholds render from the snapshot; a custom range, changed threshold, or manual “运行查询” uses live DataSage queries. The ANR page reuses the same snapshot through the parent dashboard. If the prior day's event-detail partition is not yet available at 08:00, the ANR page marks those versions and Android system values as pending instead of inventing them.
 
+Resource bounds for the existing tabs are explicit: FPS/memory percentiles use a deterministic 1% `event_id` sample while availability remains a full count. The payment `pay_step` duration query excludes the very large `catalog_load` event; the catalog success, failure, and skipped counts come from `pay_daily`. For two-day WS snapshots, `scripts/merge_daily_ws.py` can combine complete one-day exports, and `assemble_prefetch.py` requires their counts to match the independent `ws_overview` totals.
+
 ```bash
 python3 scripts/prepare_prefetch.py --output prefetch/queries-$(date +%Y%m%d).json
 # Execute every rendered SQL with DataSage and save each complete {columns, rows, row_count}
