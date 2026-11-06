@@ -2,6 +2,8 @@
 
 DataSage dashboard for Android quality metrics. The `ANR归因` entry is the second sidebar item and opens `anr-dashboard.html` inside the existing app. The page reads `anr_payload` and `anr_details` for the selected dates, validates and decompresses the uploaded longMsg chunks, and keeps records without event-detail versions visibly pending. It groups CPU samples above the selected threshold and displays the original longMsg on demand.
 
+Every App-owned CPU row has `本 App 进程与线程` as its primary category. A specialized purpose such as media loading, GC, rendering, or diagnostics is retained as a second label and can appear in both category filters. Pie slices count only the primary category once per CPU row; category bars allow overlap and their percentages must not be added together. Generic thread names in another process are never treated as App-owned solely because of their name.
+
 ## Default dates and daily prefetch
 
 The default range is the previous two Beijing calendar dates. At 08:00 Asia/Shanghai, Codex automation `emochi-android-apm` renders **all 44** manifest datasets with `scripts/prepare_prefetch.py`. It queries stability and ANR first, then the other sections, storing results under the isolated `prefetch/runs/YYYYMMDD/results/` directory with a hash of each rendered SQL. `scripts/assemble_prefetch.py` validates the output. A complete snapshot is preferred; if a resource limit blocks one section, `--allow-partial` may publish only verified datasets with `complete=false` and an explicit missing-dataset list. The browser uses the snapshot only for covered sections and queries the others live. Missing rows are never fabricated or mixed with files from another date.

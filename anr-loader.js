@@ -107,12 +107,12 @@
     if (name === "com.flow.mobile" && owner.startsWith("com.flow.mobile")) return ["main_thread", "主线程"];
     if (/^(RenderThread|Chrome_|CrRenderer|Compositor)/.test(name)) return ["graphics", "图形／WebView 渲染"];
     if (/^(Loader:Extract|ExoPlayer|MediaCodec|CodecLooper)/.test(name)) return ["media_loader", "媒体加载／解码"];
-    if (name.startsWith("ChatPool")) return ["chat_worker", "聊天后台任务"];
-    if (name.startsWith("DefaultDispatch")) return ["coroutine_worker", "协程后台任务"];
-    if (name.startsWith("arch_disk_io")) return ["disk_io", "AndroidX 磁盘任务"];
-    if (name.startsWith("default_npth")) return ["apm_worker", "APM 诊断线程（疑似）"];
+    if (owner.startsWith("com.flow.mobile") && name.startsWith("ChatPool")) return ["chat_worker", "聊天后台任务"];
+    if (owner.startsWith("com.flow.mobile") && name.startsWith("DefaultDispatch")) return ["coroutine_worker", "协程后台任务"];
+    if (owner.startsWith("com.flow.mobile") && name.startsWith("arch_disk_io")) return ["disk_io", "AndroidX 磁盘任务"];
+    if (owner.startsWith("com.flow.mobile") && name.startsWith("default_npth")) return ["apm_worker", "APM 诊断线程（疑似）"];
     if (/^(AdWorker|AppLovinSdk|Fyber|Pangle)/.test(name)) return ["ad_worker", "广告 SDK 工作线程"];
-    if (lower.includes(".com/...") || lower.includes(".io/...")) return ["network_worker", "网络请求线程（疑似）"];
+    if (owner.startsWith("com.flow.mobile") && (lower.includes(".com/...") || lower.includes(".io/..."))) return ["network_worker", "网络请求线程（疑似）"];
     if (owner.startsWith("com.flow.mobile")) return ["other_app_thread", "本 App 其他线程"];
     if (owner === "system_server") return ["system_thread", "系统服务线程"];
     if (/^(com\.|org\.|ai\.)/.test(owner)) return ["third_party_thread", "第三方应用线程"];

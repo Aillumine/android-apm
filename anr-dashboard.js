@@ -1,11 +1,11 @@
 const CATEGORY = {
-  app: {name: "本 App 进程与线程", color: "#0061A4", description: "主进程、子进程及本 App 的一般工作线程"},
+  app: {name: "本 App 进程与线程", color: "#0061A4", description: "本 App 的全部进程和线程；用途标签可与本类重复"},
   memory: {name: "内存回收与 GC", color: "#006A6A", description: "内核内存回收和运行时堆管理；两者是线索，不等于已证实内存根因"},
   system: {name: "系统与平台服务", color: "#6750A4", description: "Android 系统服务、服务线程及 Google 平台服务"},
   diagnostics: {name: "ANR 取证活动", color: "#A15C00", description: "Signal Catcher 等系统或应用的诊断线程；采样可能发生在 ANR 之后"},
   third_party: {name: "第三方应用", color: "#B3261E", description: "其他应用的进程及其线程"},
   webview: {name: "WebView 与图形", color: "#386A20", description: "WebView、浏览器及渲染线程"},
-  media: {name: "媒体处理", color: "#7D5260", description: "媒体服务与加载、解码线程"},
+  media: {name: "媒体处理", color: "#7D5260", description: "媒体服务与加载、解码线程；本 App 线程也会同时列在本 App 类"},
   ads: {name: "广告工作线程", color: "#8E4D00", description: "明确命名为广告工作线程的采样行"},
   kernel: {name: "其他内核工作", color: "#4F616E", description: "未划入内存回收的内核工作线程"},
   other: {name: "其他或未分类", color: "#5F5F5F", description: "现有名称不足以可靠归入上述类别的进程或线程"}
@@ -23,13 +23,38 @@ const RAW_TO_CATEGORY = {
   ad_worker: "ads", kernel_work: "kernel",
   other_process: "other", other_thread: "other"
 };
+function categoriesFor(row) {
+  const specialty = RAW_TO_CATEGORY[row.tag];
+  if (!specialty) throw Error("Unmapped source tag: " + row.tag);
+  if (row.scope === "app") return { primary: "app", labels: specialty === "app" ? ["app"] : ["app", specialty] };
+  if (specialty === "app") {
+    const owner = (row.parent || row.name || "").toLowerCase();
+    const primary = owner === "system_server" ? "system" : /^(com\.|org\.|ai\.)/.test(owner) ? "third_party" : "other";
+    return { primary, labels: [primary] };
+  }
+  return { primary: specialty, labels: [specialty] };
+}
+function summarizeCategories(rows) {
+  const primaryByCategory = new Map(), byCategory = new Map();
+  function add(target, category, eventId) {
+    if (!target.has(category)) target.set(category, { samples: 0, ids: new Set() });
+    target.get(category).samples++;
+    target.get(category).ids.add(eventId);
+  }
+  for (const row of rows) {
+    add(primaryByCategory, row.category, row.eventId);
+    row.categories.forEach(category => add(byCategory, category, row.eventId));
+  }
+  return { primaryByCategory, byCategory };
+}
 const $ = id => document.getElementById(id);
 let selected = null;
 let detailRows = [];
 let detailOffset = 0;
 for (const row of DATA.samples) {
-  if (!Object.hasOwn(RAW_TO_CATEGORY, row.tag)) throw Error("Unmapped source tag: " + row.tag);
-  row.category = RAW_TO_CATEGORY[row.tag];
+  const membership = categoriesFor(row);
+  row.category = membership.primary;
+  row.categories = membership.labels;
 }
 
 function categoryInfo(key) { return CATEGORY[key]; }
@@ -111,7 +136,7 @@ function renderCategoryBars(rows, byCategory, eventCount) {
   const total = rows.length;
   const groups = [...byCategory.entries()].sort((a, b) => b[1].samples - a[1].samples || a[0].localeCompare(b[0]));
   const max = groups.length ? groups[0][1].samples : 1;
-  $("categoryMeta").textContent = `${total.toLocaleString()} 条 CPU 采样行超过 ${threshold()}%，涉及 ${new Set(rows.map(row => row.eventId)).size} / ${eventCount} 条 ANR；每行只归入一个类别。柱长按最高类别缩放，数字为采样行真实占比。点击类别筛选名称列表。`;
+  $("categoryMeta").textContent = `${total.toLocaleString()} 条 CPU 采样行超过 ${threshold()}%，涉及 ${new Set(rows.map(row => row.eventId)).size} / ${eventCount} 条 ANR；本 App 线程可同时带用途标签，分类柱状图的占比不能相加。饼图按唯一主类计数，柱长按最高类别缩放。点击类别筛选名称列表。`;
   const container = $("categoryBars");
   container.replaceChildren();
   if (!groups.length) {
@@ -255,24 +280,20 @@ function renderAnrDetails(reset) {
   $("anrMore").hidden = anrOffset >= anrRows.length;
 }
 function render() {
-  const ids = population(), base = qualifying(ids), byCategory = new Map();
-  for (const row of base) {
-    if (!byCategory.has(row.category)) byCategory.set(row.category, {samples: 0, ids: new Set()});
-    const item = byCategory.get(row.category);
-    item.samples++;
-    item.ids.add(row.eventId);
-  }
-  renderPie(base, byCategory);
+  const ids = population(), base = qualifying(ids);
+  const { primaryByCategory, byCategory } = summarizeCategories(base);
+  renderPie(base, primaryByCategory);
   renderCategoryBars(base, byCategory, ids.length);
   renderAnrCharts(ids);
   const category = $("tag").value, query = $("search").value.toLowerCase().trim(), metric = $("metric").value;
-  const filtered = base.filter(row => (category === "all" || row.category === category)
+  const filtered = base.filter(row => (category === "all" || row.categories.includes(category))
     && (row.name + " " + row.parent).toLowerCase().includes(query));
   const entities = new Map();
   for (const row of filtered) {
     const key = entityKey(row);
-    if (!entities.has(key)) entities.set(key, {key, kind: row.kind, parent: row.parent, name: row.name, category: row.category, samples: 0, ids: new Set(), max: 0});
+    if (!entities.has(key)) entities.set(key, {key, kind: row.kind, parent: row.parent, name: row.name, category: row.category, categories: new Set(), samples: 0, ids: new Set(), max: 0});
     const item = entities.get(key);
+    row.categories.forEach(label => item.categories.add(label));
     item.samples++;
     item.ids.add(row.eventId);
     item.max = Math.max(item.max, row.cpu);
@@ -295,7 +316,7 @@ function render() {
   for (const item of list) {
     const row = document.createElement("div"), button = document.createElement("button"), track = document.createElement("div"), bar = document.createElement("div"), count = document.createElement("div"), minor = document.createElement("small");
     row.className = "barrow"; button.className = "entity"; track.className = "track"; bar.className = "bar"; count.className = "counts";
-    button.append(badge(item.category), document.createTextNode((item.kind === "thread" ? item.parent + " / " : "") + item.name));
+    button.append(...[...item.categories].map(badge), document.createTextNode((item.kind === "thread" ? item.parent + " / " : "") + item.name));
     button.title = "查看原始事件列表";
     button.onclick = () => selectEntity(item);
     bar.style.background = categoryInfo(item.category).color;
@@ -336,13 +357,13 @@ function renderDetails(reset) {
   }
   const count = new Set(detailRows.map(row => row.eventId)).size;
   $("detailMeta").replaceChildren();
-  $("detailMeta").append(badge(selected.category), document.createTextNode(`${selected.kind === "thread" ? selected.parent + " / " : ""}${selected.name}：${detailRows.length} 次采样，${count} 条 ANR；CPU > ${threshold()}%`));
+  $("detailMeta").append(...[...selected.categories].map(badge), document.createTextNode(`${selected.kind === "thread" ? selected.parent + " / " : ""}${selected.name}：${detailRows.length} 次采样，${count} 条 ANR；CPU > ${threshold()}%`));
   const slice = detailRows.slice(detailOffset, detailOffset + 20), fragment = document.createDocumentFragment();
   for (const row of slice) {
     const card = document.createElement("div"), top = document.createElement("div"), meta = document.createElement("div"), raw = document.createElement("div"), details = document.createElement("details"), summary = document.createElement("summary"), pre = document.createElement("pre");
     const event = DATA.events[row.eventId];
     card.className = "detailitem"; top.className = "topline"; meta.className = "muted"; raw.className = "rawline";
-    top.append(badge(row.category), document.createTextNode(`${row.eventTime} · ${row.eventId} · ${row.cpu}% · ${row.version === "verified" ? event.appVersion + " 已核实" : "版本待核验"} · 内存 ${event.ramMb == null ? "未知" : event.ramMb + " MB"} · Android ${event.osVersion === "unknown" ? "未知" : event.osVersion}`));
+    top.append(...row.categories.map(badge), document.createTextNode(`${row.eventTime} · ${row.eventId} · ${row.cpu}% · ${row.version === "verified" ? event.appVersion + " 已核实" : "版本待核验"} · 内存 ${event.ramMb == null ? "未知" : event.ramMb + " MB"} · Android ${event.osVersion === "unknown" ? "未知" : event.osVersion}`));
     meta.textContent = `原标签：${row.tagName} · CPU 段 ${row.block + 1} · ${row.relation} · ${row.blockHeader}`;
     appendMarked(raw, row.raw, selected.name);
     summary.textContent = "展开上报的 longMsg 原文（对应名称标红）";

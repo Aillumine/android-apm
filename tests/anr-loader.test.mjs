@@ -65,3 +65,9 @@ test("excludes older verified versions and labels missing details as pending", a
   assert.equal(Object.keys((await api.build(payload, details)).events).length, 0);
   assert.equal((await api.build(payload, [])).events["event-1"].version, "pending");
 });
+
+test("does not assign another app's generic coroutine thread to our app", () => {
+  const api = moduleUnderTest();
+  assert.equal(api.classify("thread", "DefaultDispatch", "com.flow.mobile")[0], "coroutine_worker");
+  assert.equal(api.classify("thread", "DefaultDispatch", "com.dti.motorola")[0], "third_party_thread");
+});

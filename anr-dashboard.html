@@ -35,7 +35,7 @@ mark.hot{background:#e3323e;color:#fff;padding:1px 2px;border-radius:3px;font-we
 </style></head><body>
 <header><h1>ANR归因看板：高 CPU 来源与分类查询</h1><p>将高 CPU 来源合并为 10 类；按占比排序的横向柱状图可筛选原始 CPU 行和完整 longMsg。</p></header><div id="anrLoadStatus" class="notice" role="status">正在读取最近两日 ANR 数据…</div>
 <div class="stats" id="stats"></div>
-<div class="notice"><strong>口径说明：</strong>分类表示来源或调查线索，不代表已证实的 ANR 根因。分类柱状图按超过阈值的 CPU 采样行计数，每行只归一类；进程行与其子线程行可能重复描述同一段 CPU 活动，因此比例不是 CPU 时间占比。每类涉及的去重 ANR 数可重叠。系统 CPU 采样也可能晚于真正的卡顿。</div>
+<div class="notice"><strong>口径说明：</strong>分类表示来源或调查线索，不代表已证实的 ANR 根因。本 App 线程同时归入“本 App”与其用途类，可显示两个标签；分类柱状图占比可重叠、不能相加。饼图每行只按唯一主类计一次。进程行与其子线程行也可能重复描述同一段 CPU 活动，因此比例不是 CPU 时间占比。系统 CPU 采样可能晚于真正的卡顿。</div>
 <div class="controls">
 <label>版本状态<select id="version"><option value="all">全部</option><option value="verified">2.2.15 及以上已核实</option><option value="pending">版本待核验</option></select></label>
 <label>手机内存<select id="ram"><option value="all">全部内存</option><option value="lt2">小于 2 GB</option><option value="2to3">2–3 GB</option><option value="3to4">3–4 GB</option><option value="4to6">4–6 GB</option><option value="ge6">6 GB 及以上</option><option value="unknown">未知</option></select></label>
