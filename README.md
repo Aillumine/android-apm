@@ -4,19 +4,19 @@ DataSage dashboard for Android quality metrics. The `ANR归因` entry is the sec
 
 ## Default dates and daily prefetch
 
-The default range is the previous two Beijing calendar dates. At 08:00 Asia/Shanghai, Codex automation `emochi-android-apm` renders **all 44** manifest datasets with `scripts/prepare_prefetch.py`, queries them through DataSage, and stores one result file per dataset under `prefetch/results/`. `scripts/assemble_prefetch.py` validates the complete inventory and atomically writes `prefetch/latest.json`. The job uploads the full artifact bundle, including the generated snapshot, to the development report. A failed or truncated dataset prevents snapshot replacement; readers can still use live queries. This deliberately avoids displaying partial results as a complete morning refresh.
+The default range is the previous two Beijing calendar dates. At 08:00 Asia/Shanghai, Codex automation `emochi-android-apm` renders **all 44** manifest datasets with `scripts/prepare_prefetch.py`. It queries stability and ANR first, then the other sections, storing results under the isolated `prefetch/runs/YYYYMMDD/results/` directory with a hash of each rendered SQL. `scripts/assemble_prefetch.py` validates the output. A complete snapshot is preferred; if a resource limit blocks one section, `--allow-partial` may publish only verified datasets with `complete=false` and an explicit missing-dataset list. The browser uses the snapshot only for covered sections and queries the others live. Missing rows are never fabricated or mixed with files from another date.
 
 The browser fetches the compressed `prefetch/latest.json.gz` snapshot once at startup. A matching default range and thresholds render from the snapshot; a custom range, changed threshold, or manual “运行查询” uses live DataSage queries. The ANR page reuses the same snapshot through the parent dashboard. If the prior day's event-detail partition is not yet available at 08:00, the ANR page marks those versions and Android system values as pending instead of inventing them.
 
-Resource bounds for the existing tabs are explicit: FPS/memory percentiles use a deterministic 1% `event_id` sample while availability remains a full count. The payment `pay_step` duration query excludes the very large `catalog_load` event; the catalog success, failure, and skipped counts come from `pay_daily`. For two-day WS snapshots, `scripts/merge_daily_ws.py` can combine complete one-day exports, and `assemble_prefetch.py` requires their counts to match the independent `ws_overview` totals.
+Resource bounds for the existing tabs are explicit: FPS/memory and WS duration percentiles use a deterministic 1% `event_id` sample while availability and WS counts remain full counts. The payment `pay_step` duration query excludes the very large `catalog_load` event; the catalog success, failure, and skipped counts come from `pay_daily`. For two-day WS snapshots, `scripts/merge_daily_ws.py` can combine complete one-day exports, and `assemble_prefetch.py` requires their counts to match the independent `ws_overview` totals.
 
 ```bash
-python3 scripts/prepare_prefetch.py --output prefetch/queries-$(date +%Y%m%d).json
-# Execute every rendered SQL with DataSage and save each complete {columns, rows, row_count}
-# result as prefetch/results/<dataset>.json. See the scheduled job configuration.
+python3 scripts/prepare_prefetch.py --output prefetch/runs/YYYYMMDD/queries.json
+# Execute every rendered SQL with DataSage and save each complete result with
+# query_sha256 under prefetch/runs/YYYYMMDD/results/<dataset>.json.
 python3 scripts/assemble_prefetch.py \
-  --queries prefetch/queries-YYYYMMDD.json \
-  --results prefetch/results \
+  --queries prefetch/runs/YYYYMMDD/queries.json \
+  --results prefetch/runs/YYYYMMDD/results \
   --output prefetch/latest.json
 ```
 

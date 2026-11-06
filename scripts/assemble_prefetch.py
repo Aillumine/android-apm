@@ -2,9 +2,10 @@
 
 import argparse
 import gzip
+import hashlib
 import json
 import os
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -50,19 +51,32 @@ def main():
     parser.add_argument("--queries", type=Path, required=True)
     parser.add_argument("--results", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--allow-partial", action="store_true", help="Publish only verified datasets and label the snapshot incomplete")
     args = parser.parse_args()
     query = json.loads(args.queries.read_text(encoding="utf-8"))
+    run_date = (date.fromisoformat(query["date_end"]) + timedelta(days=1)).strftime("%Y%m%d")
+    if args.results.parent.name != run_date or args.results.name != "results":
+        raise ValueError(f"Expected isolated results directory prefetch/runs/{run_date}/results")
     datasets = {}
+    missing = []
     for name in query["datasets"]:
         path = args.results / f"{name}.json"
         if not path.exists():
-            raise ValueError(f"Missing dataset result: {name}")
-        datasets[name] = normalize(json.loads(path.read_text(encoding="utf-8")), name)
-    validate_ws_totals(datasets)
+            missing.append(name)
+            continue
+        source = json.loads(path.read_text(encoding="utf-8"))
+        expected_hash = hashlib.sha256(query["datasets"][name]["sql"].encode("utf-8")).hexdigest()
+        if source.get("query_sha256") != expected_hash:
+            raise ValueError(f"{name}: result SQL does not match this morning's query")
+        datasets[name] = normalize(source, name)
+    if missing and not args.allow_partial:
+        raise ValueError(f"Missing dataset results: {', '.join(missing)}")
+    if {"ws_overview", "ws_reason", "ws_vpn_split"}.issubset(datasets):
+        validate_ws_totals(datasets)
     snapshot = {"schema_version": 1, "generated_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds"),
                 "date_start": query["date_start"], "date_end": query["date_end"],
                 "jank_threshold": query["jank_threshold"], "cold_threshold_ms": query["cold_threshold_ms"],
-                "datasets": datasets}
+                "complete": not missing, "missing_datasets": missing, "datasets": datasets}
     body = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
     if len(body.encode("utf-8")) > 45 * 1024 * 1024:
         raise ValueError("Snapshot exceeds 45 MiB; no partial data was published")
@@ -75,7 +89,7 @@ def main():
     compressed_temp.write_bytes(compressed)
     os.replace(temporary, args.output)
     os.replace(compressed_temp, compressed_path)
-    print(json.dumps({"datasets": len(datasets), "date_start": snapshot["date_start"],
+    print(json.dumps({"datasets": len(datasets), "missing": missing, "date_start": snapshot["date_start"],
                       "date_end": snapshot["date_end"], "bytes": len(body.encode("utf-8")),
                       "gzip_bytes": len(compressed),
                       "output": str(args.output)}, ensure_ascii=False))

@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -51,7 +52,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     queries = json.loads(args.queries.read_text(encoding="utf-8"))["datasets"]
-    columns = result_columns(queries[args.dataset]["sql"])
+    sql = queries[args.dataset]["sql"]
+    columns = result_columns(sql)
     with args.csv.open(encoding="utf-8-sig", newline="") as stream:
         records = list(csv.reader(stream))
     if records and records[0] == columns:
@@ -63,7 +65,8 @@ def main():
     rows = [dict(zip(columns, [cell if cell != "" else None for cell in record])) for record in records]
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps({"status": "success", "columns": columns, "rows": rows,
-                                       "row_count": len(rows), "truncated": False}, ensure_ascii=False), encoding="utf-8")
+                                       "row_count": len(rows), "truncated": False,
+                                       "query_sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest()}, ensure_ascii=False), encoding="utf-8")
     print(json.dumps({"dataset": args.dataset, "columns": columns, "rows": len(rows)}))
 
 

@@ -1,7 +1,2 @@
 # Generated daily snapshot can contain ANR traces; keep it off public GitHub.
-prefetch/latest.json
-prefetch/latest.json.gz
-prefetch/queries-*.json
-prefetch/results/
-prefetch/raw_exports/
-prefetch/results-day/
+prefetch/

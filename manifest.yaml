@@ -1057,6 +1057,7 @@ datasets:
         WHERE event_name IN ('ws_connect_success', 'ws_disconnect', 'ws_connect_stalled')
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
+          AND crc32(event_id) % 100 = 0
           AND event_date >= :date_start
           AND (:use_date_end = 0 OR event_date <= :date_end)
       ),
@@ -1070,6 +1071,7 @@ datasets:
         JOIN ids ON ids.event_id = pa.event_id
         WHERE pa.event_name IN ('ws_connect_success', 'ws_disconnect', 'ws_connect_stalled')
           AND pa.event_param_key IN ('connect_duration_ms', 'session_duration_ms', 'stalled_ms', 'is_reconnect')
+          AND crc32(pa.event_id) % 100 = 0
           AND pa.event_date >= :date_start
           AND (:use_date_end = 0 OR pa.event_date <= :date_end)
         GROUP BY ids.event_name, pa.event_id

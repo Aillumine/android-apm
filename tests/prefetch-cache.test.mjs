@@ -37,7 +37,10 @@ test("all sections are covered by the exact two-day snapshot", async () => {
 test("partial snapshot cannot claim a section is ready", async () => {
   const cache = cacheWith({ schema_version: 1, generated_at: "2026-11-05T08:00:00+08:00",
     date_start: "2026-11-03", date_end: "2026-11-04", jank_threshold: 10,
-    cold_threshold_ms: 2000, datasets: { crash_overview: { rows: [] } } });
+    cold_threshold_ms: 2000, complete: false, missing_datasets: ["crash_daily"],
+    datasets: { crash_overview: { rows: [] } } });
   await cache.load();
+  assert.equal(cache.info().complete, false);
+  assert.deepEqual(Array.from(cache.info().missing), ["crash_daily"]);
   assert.equal(cache.covers("stability", { date_start: "2026-11-03", date_end: "2026-11-04", use_date_end: 1 }), false);
 });

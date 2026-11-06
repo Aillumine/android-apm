@@ -82,7 +82,12 @@ def main():
         raise ValueError("manifest dataset inventory is incomplete")
     queries = {name: {"sql": render(sql, params)[0], "params": render(sql, params)[1]}
                for name, sql in source.items()}
-    output = {"schema_version": 1, **params, "datasets": queries}
+    core = ("crash_overview", "crash_daily", "crash_breakdown", "crash_by_version", "crash_by_model",
+            "anr_payload", "anr_details")
+    if any(name not in queries for name in core):
+        raise ValueError("Core stability or ANR dataset missing")
+    output = {"schema_version": 1, **params, "priority_order": list(core) + [name for name in queries if name not in core],
+              "datasets": queries}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"date_start": params["date_start"], "date_end": params["date_end"],

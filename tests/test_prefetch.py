@@ -1,4 +1,6 @@
+import hashlib
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,6 +43,31 @@ class PrefetchTest(unittest.TestCase):
         data["ws_reason"]["rows"][0]["cnt"] = 2
         with self.assertRaisesRegex(ValueError, "reason total mismatch"):
             validate_ws_totals(data)
+
+    def test_partial_snapshot_is_labeled_and_bound_to_run_sql(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            queries = root / "runs/20261106/queries.json"
+            results = queries.parent / "results"
+            results.mkdir(parents=True)
+            query = {"date_start": "2026-11-04", "date_end": "2026-11-05",
+                     "jank_threshold": 10, "cold_threshold_ms": 2000,
+                     "datasets": {"a": {"sql": "SELECT 1 AS n"}, "b": {"sql": "SELECT 2 AS n"}}}
+            queries.write_text(json.dumps(query))
+            (results / "a.json").write_text(json.dumps({"columns": ["n"], "rows": [[1]], "row_count": 1,
+                "query_sha256": hashlib.sha256(b"SELECT 1 AS n").hexdigest()}))
+            output = root / "latest.json"
+            cmd = ["python3", str(ROOT / "scripts/assemble_prefetch.py"), "--queries", str(queries),
+                   "--results", str(results), "--output", str(output)]
+            self.assertNotEqual(subprocess.run(cmd, capture_output=True).returncode, 0)
+            subprocess.run(cmd + ["--allow-partial"], check=True, capture_output=True)
+            snapshot = json.loads(output.read_text())
+            self.assertFalse(snapshot["complete"])
+            self.assertEqual(snapshot["missing_datasets"], ["b"])
+            self.assertEqual(snapshot["datasets"]["a"]["rows"], [{"n": 1}])
+            query["datasets"]["a"]["sql"] = "SELECT 3 AS n"
+            queries.write_text(json.dumps(query))
+            self.assertNotEqual(subprocess.run(cmd + ["--allow-partial"], capture_output=True).returncode, 0)
 
 
 if __name__ == "__main__":

@@ -1075,7 +1075,7 @@ async function loadSocket() {
     $("heroWsStalled").textContent = fmtPct(o.stalled_user_rate);
     $("heroWsStalledMeta").textContent = `${fmtCompact(o.stalled_users)} / ${fmtCompact(o.attempt_users)} 人连续失败超 30s`;
     $("heroWsConnect").textContent = fmtMs(dur.connect_p90);
-    $("heroWsConnectMeta").textContent = `P50 ${fmtMs(dur.connect_p50)} · P99 ${fmtMs(dur.connect_p99)}`;
+    $("heroWsConnectMeta").textContent = `P50 ${fmtMs(dur.connect_p50)} · P99 ${fmtMs(dur.connect_p99)} · 1% 固定采样`;
     $("heroWsSession").textContent = fmtMs(dur.session_p50);
     $("heroWsSessionMeta").textContent = `P90 ${fmtMs(dur.session_p90)} · 断开 ${fmtCompact(o.disconnects)} 次`;
     $("wsNote").textContent =
@@ -1264,7 +1264,11 @@ async function runSection(name, { force = false, silent = false } = {}) {
     state.loadedSections[name] = true;
     if (!silent && currentSection === name) setStatus("");
     clearSectionSkeleton(name);
-    if (!silent && currentSection === name) setDataStatus("ok", cached ? "每日预加载数据 · Android" : `ods_clickstream_app · Android · ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+    if (!silent && currentSection === name) {
+      const partial = window.ApmPrefetch?.info()?.complete === false;
+      setDataStatus("ok", cached ? (partial ? "今日部分预加载 · 其余板块实时查询" : "每日预加载数据 · Android")
+        : `ods_clickstream_app · Android · ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+    }
   } catch (error) {
     if (!silent && currentSection === name) setStatus(`「${SECTION_META[name].title}」查询失败：${error.message}`, "error");
     clearSectionSkeleton(name, { failed: true });

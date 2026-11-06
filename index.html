@@ -663,7 +663,7 @@
             <div class="panel-title">
               <h2>耗时分位</h2>
               <button type="button" class="info-dot"
-                data-tip="<code>connect_duration_ms</code> 从最近一次 attempt 起算；没有记录到 attempt 时该字段直接缺席，而不是填 0——填 0 会和「瞬间连上」无法区分，污染分位数。首连与重连分开看，重连通常更快。">i</button>
+                data-tip="<code>connect_duration_ms</code> 从最近一次 attempt 起算；没有记录到 attempt 时该字段直接缺席，而不是填 0——填 0 会和「瞬间连上」无法区分，污染分位数。耗时分位按 event_id 固定抽样 1%，连接次数和成功率仍为全量。首连与重连分开看，重连通常更快。">i</button>
             </div>
           </div>
           <div class="chart" id="wsDurationChart"></div>

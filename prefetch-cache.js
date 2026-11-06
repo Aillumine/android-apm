@@ -36,6 +36,11 @@
     return Boolean(names && lookup(names, params));
   }
 
+  function info() {
+    return snapshot && { complete: snapshot.complete !== false,
+      missing: snapshot.missing_datasets || [], generatedAt: snapshot.generated_at };
+  }
+
   async function load() {
     try {
       const response = await fetch("prefetch/latest.json.gz", { credentials: "include", cache: "no-store" });
@@ -50,5 +55,5 @@
     }
   }
 
-  global.ApmPrefetch = { load, lookup, covers, sections };
+  global.ApmPrefetch = { load, lookup, covers, info, sections };
 })(typeof window !== "undefined" ? window : globalThis);
