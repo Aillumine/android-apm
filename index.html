@@ -23,6 +23,9 @@
         <button class="nav-item active" data-section="stability">
           <span class="nav-ico">🛡️</span> 稳定性
         </button>
+        <button class="nav-item" data-section="anr">
+          <span class="nav-ico">🔎</span> ANR归因
+        </button>
         <button class="nav-item" data-section="frame">
           <span class="nav-ico">🎞️</span> 流畅度
         </button>
@@ -193,6 +196,11 @@
             </table>
           </div>
         </div>
+      </section>
+
+      <!-- ANR 归因 -->
+      <section id="sec-anr" class="view">
+        <iframe id="anrFrame" class="anr-frame" title="ANR归因看板" loading="lazy"></iframe>
       </section>
 
       <!-- 流畅度 -->
@@ -655,7 +663,7 @@
             <div class="panel-title">
               <h2>耗时分位</h2>
               <button type="button" class="info-dot"
-                data-tip="<code>connect_duration_ms</code> 从最近一次 attempt 起算；没有记录到 attempt 时该字段直接缺席，而不是填 0——填 0 会和「瞬间连上」无法区分，污染分位数。首连与重连分开看，重连通常更快。">i</button>
+                data-tip="<code>connect_duration_ms</code> 从最近一次 attempt 起算；没有记录到 attempt 时该字段直接缺席，而不是填 0——填 0 会和「瞬间连上」无法区分，污染分位数。耗时分位按 event_id 固定抽样 1%，连接次数和成功率仍为全量。首连与重连分开看，重连通常更快。">i</button>
             </div>
           </div>
           <div class="chart" id="wsDurationChart"></div>
@@ -714,7 +722,7 @@
               <div class="panel-title">
                 <h2>各步骤耗时 P90</h2>
                 <button type="button" class="info-dot"
-                  data-tip="每个步骤各自计时：<code>started</code> 打点，同一步骤的终态出耗时并释放打点。没有配对 <code>started</code> 的终态不输出耗时。<code>bill_poll</code> 每轮轮询只打一次点，量的是用户等订单落地等了多久，不是单次 HTTP。">i</button>
+                  data-tip="每个步骤各自计时：<code>started</code> 打点，同一步骤的终态出耗时并释放打点。没有配对 <code>started</code> 的终态不输出耗时。<code>bill_poll</code> 每轮轮询只打一次点，量的是用户等订单落地等了多久，不是单次 HTTP。海量 <code>catalog_load</code> 不参与本耗时图；其成功、失败和跳过次数分别由每日结果与失败明细汇总到旁边的商品目录图。">i</button>
               </div>
             </div>
             <div class="chart" id="payDurationChart"></div>
@@ -926,6 +934,7 @@
   </div>
 
   <script src="async-query.js"></script>
+  <script src="prefetch-cache.js"></script>
   <script src="app.js"></script>
 </body>
 

@@ -2,6 +2,7 @@ const SLUG = "android-apm";
 
 const SECTION_META = {
   stability: { title: "稳定性", desc: "前台崩溃与 ANR 分离口径、按版本与机型下钻" },
+  anr: { title: "ANR归因", desc: "完整 longMsg、CPU 来源分类与 ANR 触发组件" },
   frame: { title: "流畅度", desc: "app_frame_performance 卡顿率分布、最卡页面与版本对比（1% 采样）" },
   startup: { title: "冷启动", desc: "process→onCreate、onCreate 方法体、到上报点的总耗时" },
   messages: { title: "收发消息", desc: "回复完成率、首字与总耗时分位、失败原因与网络类型（1% 采样）" },
@@ -24,6 +25,7 @@ const state = {
   coldThreshold: 2000,
   dateRangeMode: "quick",
   charts: {},
+  bypassSnapshot: false,
 };
 
 function $(id) {
@@ -133,11 +135,16 @@ function isAsyncDegradation(error) {
     "Dashboard query degraded to async",
     "Hatchet run 已成功但本地无可靠结果",
     "查询轮询超时",
+    "sync inline overflow (bytes)",
   ].some((message) => error.message.includes(message));
 }
 
 async function queryDatasets(names, extra = {}) {
   const params = { ...dateParams(), ...extra };
+  if (!state.bypassSnapshot) {
+    const cached = window.ApmPrefetch?.lookup(names, params);
+    if (cached) return cached;
+  }
   try {
     return await queryDatasetsDirect(names, params);
   } catch (error) {
@@ -892,7 +899,7 @@ async function loadPerf() {
   }
 
   $("perfAvailability").innerHTML =
-    `Android <code>app_performance</code> 已有数据：<b>${fmtCompact(samples)}</b> 条，覆盖 ${a.first_date} ~ ${a.last_date}。`;
+    `Android <code>app_performance</code> 已有数据：<b>${fmtCompact(samples)}</b> 条，覆盖 ${a.first_date} ~ ${a.last_date}。下方分位和均值按 event_id 固定抽样 1%（${fmtCompact(data.perf_percentiles.rows[0]?.samples || 0)} 条）计算。`;
   const p = data.perf_percentiles.rows[0] || {};
   $("heroAvgFps").textContent = fmt(p.avg_fps, 1);
   $("heroAvgFpsMeta").textContent = `P90 ${fmt(p.fps_p90, 1)} · P95 ${fmt(p.fps_p95, 1)}（越低越差）`;
@@ -1068,7 +1075,7 @@ async function loadSocket() {
     $("heroWsStalled").textContent = fmtPct(o.stalled_user_rate);
     $("heroWsStalledMeta").textContent = `${fmtCompact(o.stalled_users)} / ${fmtCompact(o.attempt_users)} 人连续失败超 30s`;
     $("heroWsConnect").textContent = fmtMs(dur.connect_p90);
-    $("heroWsConnectMeta").textContent = `P50 ${fmtMs(dur.connect_p50)} · P99 ${fmtMs(dur.connect_p99)}`;
+    $("heroWsConnectMeta").textContent = `P50 ${fmtMs(dur.connect_p50)} · P99 ${fmtMs(dur.connect_p99)} · 1% 固定采样`;
     $("heroWsSession").textContent = fmtMs(dur.session_p50);
     $("heroWsSessionMeta").textContent = `P90 ${fmtMs(dur.session_p90)} · 断开 ${fmtCompact(o.disconnects)} 次`;
     $("wsNote").textContent =
@@ -1131,7 +1138,11 @@ async function loadPayment() {
   const daily = data.pay_daily.rows;
   const hasData = Number(f.flows || 0) > 0;
 
-  const catalog = steps.find((r) => r.step === "catalog_load") || {};
+  const catalog = {
+    success_cnt: daily.reduce((sum, row) => sum + Number(row.catalog_ok || 0), 0),
+    failed_cnt: daily.reduce((sum, row) => sum + Number(row.catalog_failed || 0), 0),
+    skipped_cnt: daily.reduce((sum, row) => sum + Number(row.catalog_skipped || 0), 0),
+  };
   const catalogTotal = Number(catalog.success_cnt || 0) + Number(catalog.failed_cnt || 0);
 
   if (!hasData) {
@@ -1190,8 +1201,36 @@ async function loadPayment() {
 
 // ---------- navigation & bootstrap ----------
 
+function loadAnr() {
+  const frame = $("anrFrame");
+  const params = dateParams();
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const query = new URLSearchParams({
+    date_start: params.date_start,
+    date_end: params.date_end || params.date_start,
+    request_id: requestId,
+  });
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => finish(new Error("ANR 数据加载超时")), 5 * 60 * 1000);
+    function finish(error) {
+      clearTimeout(timeout);
+      window.removeEventListener("message", onMessage);
+      if (error) reject(error);
+      else resolve();
+    }
+    function onMessage(event) {
+      if (event.source !== frame.contentWindow || event.origin !== location.origin) return;
+      if (event.data?.source !== "android-apm-anr" || event.data.requestId !== requestId) return;
+      finish(event.data.error ? new Error(event.data.error) : null);
+    }
+    window.addEventListener("message", onMessage);
+    frame.src = `anr-dashboard.html?${query}`;
+  });
+}
+
 const LOADERS = {
   stability: loadStability,
+  anr: loadAnr,
   frame: loadFrame,
   startup: loadStartup,
   messages: loadMessages,
@@ -1205,23 +1244,35 @@ const LOADERS = {
 
 let currentSection = "stability";
 
-async function runSection(name, { force = false } = {}) {
+async function runSection(name, { force = false, silent = false } = {}) {
   if (state.loadedSections[name] && !force) return;
-  showSectionLoading(name);
-  showSectionSkeleton(name);
-  setStatus("查询中…");
-  setDataStatus("loading", "查询中…");
+  const params = {
+    ...dateParams(),
+    ...(name === "frame" ? { jank_threshold: state.jankThreshold } : {}),
+    ...(name === "startup" ? { cold_threshold_ms: state.coldThreshold } : {}),
+  };
+  const cached = !state.bypassSnapshot && window.ApmPrefetch?.covers(name, params);
+  if (!cached && !silent && currentSection === name) {
+    showSectionLoading(name);
+    showSectionSkeleton(name);
+    setStatus("查询中…");
+    setDataStatus("loading", "查询中…");
+  }
   const startedAt = Date.now();
   try {
     await LOADERS[name]();
     state.loadedSections[name] = true;
-    setStatus("");
+    if (!silent && currentSection === name) setStatus("");
     clearSectionSkeleton(name);
-    setDataStatus("ok", `ods_clickstream_app · Android · ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+    if (!silent && currentSection === name) {
+      const partial = window.ApmPrefetch?.info()?.complete === false;
+      setDataStatus("ok", cached ? (partial ? "今日部分预加载 · 其余板块实时查询" : "每日预加载数据 · Android")
+        : `ods_clickstream_app · Android · ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+    }
   } catch (error) {
-    setStatus(`「${SECTION_META[name].title}」查询失败：${error.message}`, "error");
+    if (!silent && currentSection === name) setStatus(`「${SECTION_META[name].title}」查询失败：${error.message}`, "error");
     clearSectionSkeleton(name, { failed: true });
-    setDataStatus("error", `${SECTION_META[name].title} 查询失败`);
+    if (!silent && currentSection === name) setDataStatus("error", `${SECTION_META[name].title} 查询失败`);
   } finally {
     clearSectionLoading(name);
   }
@@ -1233,18 +1284,21 @@ function switchSection(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `sec-${name}`));
   $("pageTitle").textContent = SECTION_META[name].title;
   $("pageDesc").textContent = SECTION_META[name].desc;
-  runSection(name).then(resizeAll);
+  return runSection(name).then(resizeAll);
+}
+
+function beijingDate(daysFromToday) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(new Date(Date.now() + daysFromToday * 86400000));
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function setQuickRange(days) {
   state.dateRangeMode = "quick";
-  const end = new Date();
-  end.setDate(end.getDate() - 1);
-  const start = new Date(end);
-  start.setDate(start.getDate() - (days - 1));
-  const iso = (d) => d.toISOString().slice(0, 10);
-  $("startDate").value = iso(start);
-  $("endDate").value = iso(end);
+  $("startDate").value = beijingDate(-days);
+  $("endDate").value = beijingDate(-1);
   state.dateRangeMode = "custom";
 }
 
@@ -1273,6 +1327,7 @@ document.querySelectorAll("#quickRange .quick-chip").forEach((chip) => {
 });
 
 $("refreshBtn").addEventListener("click", () => {
+  state.bypassSnapshot = true;
   invalidateAll();
   runSection(currentSection, { force: true });
 });
@@ -1341,5 +1396,21 @@ document.addEventListener("click", (e) => {
 
 window.addEventListener("resize", resizeAll);
 
-setQuickRange(2);
-switchSection("stability");
+async function bootstrap() {
+  setQuickRange(2);
+  await window.ApmPrefetch?.load();
+  await switchSection("stability");
+  if (!state.bypassSnapshot) {
+    for (const name of Object.keys(LOADERS)) {
+      const params = {
+        ...dateParams(),
+        ...(name === "frame" ? { jank_threshold: state.jankThreshold } : {}),
+        ...(name === "startup" ? { cold_threshold_ms: state.coldThreshold } : {}),
+      };
+      if (name !== "stability" && name !== "anr" && window.ApmPrefetch?.covers(name, params)) {
+        await runSection(name, { silent: true });
+      }
+    }
+  }
+}
+bootstrap();

@@ -270,6 +270,15 @@ code {
   display: block;
 }
 
+.anr-frame {
+  display: block;
+  width: 100%;
+  height: max(760px, calc(100vh - 160px));
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
 .threshold-bar {
   display: flex;
   flex-wrap: wrap;
