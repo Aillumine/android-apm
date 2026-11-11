@@ -6,7 +6,6 @@ const CATEGORY = {
   third_party: {name: "第三方应用", color: "#B3261E", description: "其他应用的进程及其线程"},
   webview: {name: "WebView 与图形", color: "#386A20", description: "WebView、浏览器及渲染线程"},
   media: {name: "媒体处理", color: "#7D5260", description: "媒体服务与加载、解码线程；本 App 线程也会同时列在本 App 类"},
-  ads: {name: "广告工作线程", color: "#8E4D00", description: "明确命名为广告工作线程的采样行"},
   kernel: {name: "其他内核工作", color: "#4F616E", description: "未划入内存回收的内核工作线程"},
   other: {name: "其他或未分类", color: "#5F5F5F", description: "现有名称不足以可靠归入上述类别的进程或线程"}
 };
@@ -20,7 +19,7 @@ const RAW_TO_CATEGORY = {
   third_party_process: "third_party", third_party_thread: "third_party",
   webview: "webview", graphics: "webview",
   media_system: "media", media_loader: "media",
-  ad_worker: "ads", kernel_work: "kernel",
+  ad_worker: "app", kernel_work: "kernel",
   other_process: "other", other_thread: "other"
 };
 function categoriesFor(row) {
