@@ -1397,7 +1397,7 @@ document.addEventListener("click", (e) => {
 window.addEventListener("resize", resizeAll);
 
 async function bootstrap() {
-  setQuickRange(2);
+  setQuickRange(7);
   await window.ApmPrefetch?.load();
   await switchSection("stability");
   if (!state.bypassSnapshot) {

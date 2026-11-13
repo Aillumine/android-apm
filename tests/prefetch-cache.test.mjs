@@ -12,12 +12,12 @@ function cacheWith(snapshot) {
   return window.ApmPrefetch;
 }
 
-test("all sections are covered by the exact two-day snapshot", async () => {
+test("all sections are covered by the exact seven-day snapshot", async () => {
   const seed = cacheWith(null);
   const names = Object.values(seed.sections).flat();
   assert.equal(new Set(names).size, 44);
   const snapshot = { schema_version: 1, generated_at: "2026-11-05T08:00:00+08:00",
-    date_start: "2026-11-03", date_end: "2026-11-04", jank_threshold: 10,
+    date_start: "2026-10-29", date_end: "2026-11-04", jank_threshold: 10,
     cold_threshold_ms: 2000,
     datasets: Object.fromEntries(names.map(name => [name, { columns: [], rows: [] }])) };
   const cache = cacheWith(snapshot);

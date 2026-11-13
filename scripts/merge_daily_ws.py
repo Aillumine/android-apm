@@ -1,4 +1,4 @@
-"""Combine two one-day WS aggregates without averaging percentages."""
+"""Combine consecutive one-day WS aggregates without averaging percentages."""
 
 import argparse
 import json
@@ -41,8 +41,8 @@ def main():
     parser.add_argument("--day", type=Path, action="append", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if len(args.day) != 2:
-        raise ValueError("Exactly two day files are required")
+    if len(set(path.resolve() for path in args.day)) != len(args.day):
+        raise ValueError("Daily input files must be distinct")
     sources = [json.loads(path.read_text(encoding="utf-8")) for path in args.day]
     if any(source.get("truncated") or len(source["rows"]) != source["row_count"] for source in sources):
         raise ValueError("Incomplete daily result")
