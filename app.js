@@ -455,8 +455,15 @@ const IMPORTANCE_COLORS = {
 };
 
 async function loadStability() {
-  const overviewReq = queryDatasets(["crash_overview"]);
-  const detailReq = queryDatasets(["crash_daily", "crash_breakdown", "crash_by_version", "crash_by_model"]);
+  const core = ["crash_overview", "crash_daily", "crash_breakdown"];
+  const breakdowns = ["crash_by_version", "crash_by_model"];
+  const cache = state.bypassSnapshot ? null : window.ApmPrefetch;
+  const params = dateParams();
+  const cached = cache?.lookup(core, params);
+  const overviewReq = cached ? Promise.resolve(cached) : queryDatasets(["crash_overview"]);
+  const detailReq = cached
+    ? Promise.resolve({ ...cached, ...Object.fromEntries(breakdowns.map(name => [name, cache.lookup([name], params)?.[name]])) })
+    : queryDatasets([...core.slice(1), ...breakdowns]);
   const o = (await overviewReq).crash_overview.rows[0] || {};
 
   $("heroCrashFree").textContent = fmtPct(o.crash_free_user_rate, 3);
@@ -513,14 +520,16 @@ async function loadStability() {
     { decimals: 0 },
   ));
 
-  fillTable("stabilityVersionBody", data.crash_by_version.rows, (r) => [
+  if (!data.crash_by_version) $("stabilityVersionBody").innerHTML = '<tr><td colspan="10">本次预取未包含此明细，可点「运行查询」实时获取。</td></tr>';
+  else fillTable("stabilityVersionBody", data.crash_by_version.rows, (r) => [
     escapeHtml(r.app_version), fmtCompact(r.launches), fmtCompact(r.launch_users),
     fmtInt(r.fg_crash_count), fmtInt(r.fg_anr_count), fmtInt(r.anr_users),
     fmtPct(r.crash_free_user_rate, 3), fmtPct(r.anr_free_user_rate, 3),
     fmtPct(r.crash_per_launch, 3), fmtPct(r.anr_per_launch, 3),
   ]);
 
-  fillTable("stabilityModelBody", data.crash_by_model.rows, (r) => [
+  if (!data.crash_by_model) $("stabilityModelBody").innerHTML = '<tr><td colspan="10">本次预取未包含此明细，可点「运行查询」实时获取。</td></tr>';
+  else fillTable("stabilityModelBody", data.crash_by_model.rows, (r) => [
     escapeHtml(r.brand), escapeHtml(r.model), escapeHtml(r.os_version),
     fmtCompact(r.launch_users), fmtInt(r.fg_crash_users), fmtInt(r.fg_anr_users),
     fmtPct(r.crash_user_ratio, 2), fmtPct(r.anr_user_ratio, 2),
@@ -1251,7 +1260,9 @@ async function runSection(name, { force = false, silent = false } = {}) {
     ...(name === "frame" ? { jank_threshold: state.jankThreshold } : {}),
     ...(name === "startup" ? { cold_threshold_ms: state.coldThreshold } : {}),
   };
-  const cached = !state.bypassSnapshot && window.ApmPrefetch?.covers(name, params);
+  const cached = !state.bypassSnapshot && (name === "stability"
+    ? window.ApmPrefetch?.lookup(["crash_overview", "crash_daily", "crash_breakdown"], params)
+    : window.ApmPrefetch?.covers(name, params));
   if (!cached && !silent && currentSection === name) {
     showSectionLoading(name);
     showSectionSkeleton(name);
