@@ -21,6 +21,7 @@ const VERSION_PALETTE = [
 
 const state = {
   loadedSections: {},
+  renderedSections: new Set(),
   jankThreshold: 10,
   coldThreshold: 2000,
   dateRangeMode: "quick",
@@ -454,7 +455,7 @@ const IMPORTANCE_COLORS = {
   "top-sleeping": "#a3a3a3", service: "#94a3b8", cached: "#cbd5e1", other: "#e2e8f0",
 };
 
-async function loadStability() {
+async function loadStability(isCurrent) {
   const core = ["crash_overview", "crash_daily", "crash_breakdown"];
   const breakdowns = ["crash_by_version", "crash_by_model"];
   const cache = state.bypassSnapshot ? null : window.ApmPrefetch;
@@ -464,7 +465,9 @@ async function loadStability() {
   const detailReq = cached
     ? Promise.resolve({ ...cached, ...Object.fromEntries(breakdowns.map(name => [name, cache.lookup([name], params)?.[name]])) })
     : queryDatasets([...core.slice(1), ...breakdowns]);
-  const o = (await overviewReq).crash_overview.rows[0] || {};
+  const [overview, data] = await Promise.all([overviewReq, detailReq]);
+  if (!isCurrent()) return;
+  const o = overview.crash_overview.rows[0] || {};
 
   $("heroCrashFree").textContent = fmtPct(o.crash_free_user_rate, 3);
   $("heroCrashFreeMeta").textContent =
@@ -490,7 +493,6 @@ async function loadStability() {
     `其中 <b>${fmtInt(o.background_exit_count)}</b> 条发生在后台（CACHED / SERVICE 等），已从上方 Crash-free / ANR-free 指标中剔除。` +
     `崩溃在下次启动时补报，当日数字会随次日回填小幅上修。`;
 
-  const data = await detailReq;
   const daily = data.crash_daily.rows;
   initChart("stabilityTrendChart", "stabilityTrend").setOption(multiLineOption(
     daily.map((r) => r.event_date),
@@ -538,11 +540,12 @@ async function loadStability() {
 
 // ---------- 流畅度 ----------
 
-async function loadFrame() {
+async function loadFrame(isCurrent) {
   const params = { jank_threshold: state.jankThreshold };
   const overviewReq = queryDatasets(["frame_overview", "frame_percentiles"], params);
   const detailReq = queryDatasets(["frame_by_screen", "frame_daily_by_version", "frame_by_version"], params);
-  const overview = await overviewReq;
+  const [overview, data] = await Promise.all([overviewReq, detailReq]);
+  if (!isCurrent()) return;
   const o = overview.frame_overview.rows[0] || {};
 
   $("heroAvgJank").textContent = `${fmt(o.avg_jank_pct, 2)}%`;
@@ -566,7 +569,6 @@ async function loadFrame() {
     },
   ));
 
-  const data = await detailReq;
   initChart("frameVersionTrendChart", "frameVersionTrend")
     .setOption(byVersionTrendOption(data.frame_daily_by_version.rows, "avg_jank_pct", { unit: "%", decimals: 2 }));
 
@@ -589,11 +591,13 @@ async function loadFrame() {
 
 // ---------- 冷启动 ----------
 
-async function loadStartup() {
+async function loadStartup(isCurrent) {
   const params = { cold_threshold_ms: state.coldThreshold };
   const overviewReq = queryDatasets(["startup_overview"], params);
   const detailReq = queryDatasets(["startup_daily", "startup_by_version", "startup_by_model", "startup_by_os"], params);
-  const o = (await overviewReq).startup_overview.rows[0] || {};
+  const [overview, data] = await Promise.all([overviewReq, detailReq]);
+  if (!isCurrent()) return;
+  const o = overview.startup_overview.rows[0] || {};
 
   $("heroColdP50").textContent = fmtMs(o.p50_total_ms);
   $("heroColdP50Meta").textContent = `${fmtCompact(o.launches)} 次冷启动 · 覆盖率 ${fmtPct(o.total_coverage, 1)}`;
@@ -631,7 +635,6 @@ async function loadStartup() {
     ],
   });
 
-  const data = await detailReq;
   const daily = data.startup_daily.rows;
   initChart("startupTrendChart", "startupTrend").setOption(multiLineOption(
     daily.map((r) => r.event_date),
@@ -688,14 +691,16 @@ const FAILURE_COLORS = {
   unclassified: "#94a3b8",
 };
 
-async function loadMessages() {
+async function loadMessages(isCurrent) {
   const overviewReq = queryDatasets(["msg_overview"]);
   const detailReq = queryDatasets([
     "msg_daily", "msg_failure_breakdown", "msg_error_code",
     "msg_by_model", "msg_by_network", "msg_error_breakdown", "msg_timeout",
     "msg_vpn_split",
   ]);
-  const o = (await overviewReq).msg_overview.rows[0] || {};
+  const [overview, data] = await Promise.all([overviewReq, detailReq]);
+  if (!isCurrent()) return;
+  const o = overview.msg_overview.rows[0] || {};
 
   $("heroMsgCompleted").textContent = fmtPct(o.completed_rate, 3);
   $("heroMsgCompletedMeta").textContent =
@@ -725,7 +730,6 @@ async function loadMessages() {
     `总耗时 P50 <b>${fmtMs(o.p50_total_ms)}</b> / P90 <b>${fmtMs(o.p90_total_ms)}</b>；` +
     `回复过程中切后台或离开聊天页占 <b>${fmtPct(o.exit_during_stream_ratio, 2)}</b>。`;
 
-  const data = await detailReq;
 
   const daily = data.msg_daily.rows;
   initChart("msgTrendChart", "msgTrend").setOption(multiLineOption(
@@ -892,8 +896,9 @@ async function loadMessages() {
 
 // ---------- FPS / 内存 ----------
 
-async function loadPerf() {
+async function loadPerf(isCurrent) {
   const data = await queryDatasets(["perf_availability", "perf_percentiles"]);
+  if (!isCurrent()) return;
   const a = data.perf_availability.rows[0] || {};
   const samples = Number(a.android_samples || 0);
 
@@ -922,8 +927,9 @@ async function loadPerf() {
 
 // ---------- 日活版本占比 ----------
 
-async function loadDau() {
+async function loadDau(isCurrent) {
   const data = await queryDatasets(["dau_version_daily", "dau_version_share"]);
+  if (!isCurrent()) return;
   const daily = data.dau_version_daily.rows;
   const share = data.dau_version_share.rows;
 
@@ -953,8 +959,9 @@ async function loadDau() {
 
 // ---------- 设备分布 ----------
 
-async function loadDevice() {
+async function loadDevice(isCurrent) {
   const data = await queryDatasets(["device_summary", "device_brand_share", "device_model_share", "device_os_share"]);
+  if (!isCurrent()) return;
   const s = data.device_summary.rows[0] || {};
   $("heroDeviceUsers").textContent = fmtCompact(s.total_users);
   $("heroDeviceModels").textContent = fmtInt(s.distinct_models);
@@ -984,8 +991,9 @@ async function loadDevice() {
 
 // ---------- 商业化埋点 ----------
 
-async function loadTracking() {
+async function loadTracking(isCurrent) {
   const data = await queryDatasets(["tracking_business_daily"]);
+  if (!isCurrent()) return;
   let rows = data.tracking_business_daily.rows;
   if (!rows.length) {
     $("heroTrackDau").textContent = "—";
@@ -1062,8 +1070,9 @@ async function loadTracking() {
 // 埋点未发版时整段查询都是 0 行。空态必须说清「为什么空」，否则读者会当成查询挂了。
 const PENDING_RELEASE = "(未发版)";
 
-async function loadSocket() {
+async function loadSocket(isCurrent) {
   const data = await queryDatasets(["ws_overview", "ws_daily", "ws_duration", "ws_reason", "ws_vpn_split"]);
+  if (!isCurrent()) return;
   const o = data.ws_overview.rows[0] || {};
   const dur = data.ws_duration.rows[0] || {};
   const daily = data.ws_daily.rows;
@@ -1140,8 +1149,9 @@ const PAY_FUNNEL_STEPS = [
   { key: "transaction_finish", label: "订单确认" },
 ];
 
-async function loadPayment() {
+async function loadPayment(isCurrent) {
   const data = await queryDatasets(["pay_funnel", "pay_step", "pay_failure", "pay_daily"]);
+  if (!isCurrent()) return;
   const f = data.pay_funnel.rows[0] || {};
   const steps = data.pay_step.rows;
   const daily = data.pay_daily.rows;
@@ -1210,8 +1220,12 @@ async function loadPayment() {
 
 // ---------- navigation & bootstrap ----------
 
-function loadAnr() {
-  const frame = $("anrFrame");
+function loadAnr(isCurrent) {
+  const previous = $("anrFrame");
+  const frame = previous.cloneNode(false);
+  frame.removeAttribute("id");
+  frame.loading = "eager";
+  frame.style.cssText = "position:absolute;visibility:hidden;pointer-events:none";
   const params = dateParams();
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const query = new URLSearchParams({
@@ -1225,8 +1239,16 @@ function loadAnr() {
     function finish(error) {
       clearTimeout(timeout);
       window.removeEventListener("message", onMessage);
-      if (error) reject(error);
-      else resolve();
+      if (error || !isCurrent()) {
+        frame.remove();
+        if (error) reject(error);
+        else resolve();
+        return;
+      }
+      previous.remove();
+      frame.id = "anrFrame";
+      frame.removeAttribute("style");
+      resolve();
     }
     function onMessage(event) {
       if (event.source !== frame.contentWindow || event.origin !== location.origin) return;
@@ -1235,6 +1257,7 @@ function loadAnr() {
     }
     window.addEventListener("message", onMessage);
     frame.src = `anr-dashboard.html?${query}`;
+    previous.after(frame);
   });
 }
 
@@ -1253,9 +1276,14 @@ const LOADERS = {
 };
 
 let currentSection = "stability";
+const sectionRequests = new Map();
 
 async function runSection(name, { force = false, silent = false } = {}) {
   if (state.loadedSections[name] && !force) return;
+  const request = Symbol(name);
+  sectionRequests.set(name, request);
+  const isCurrent = () => sectionRequests.get(name) === request;
+  const hasResults = state.renderedSections.has(name);
   const params = {
     ...dateParams(),
     ...(name === "frame" ? { jank_threshold: state.jankThreshold } : {}),
@@ -1265,14 +1293,18 @@ async function runSection(name, { force = false, silent = false } = {}) {
     ? window.ApmPrefetch?.lookup(["crash_overview", "crash_daily", "crash_breakdown"], params)
     : window.ApmPrefetch?.covers(name, params));
   if (!cached && !silent && currentSection === name) {
-    showSectionLoading(name);
-    showSectionSkeleton(name);
-    setStatus("查询中…");
+    if (!hasResults) {
+      showSectionLoading(name);
+      showSectionSkeleton(name);
+    }
+    setStatus(hasResults ? "查询中，当前显示上次结果…" : "查询中…");
     setDataStatus("loading", "查询中…");
   }
   const startedAt = Date.now();
   try {
-    await LOADERS[name]();
+    await LOADERS[name](isCurrent);
+    if (!isCurrent()) return;
+    state.renderedSections.add(name);
     state.loadedSections[name] = true;
     if (!silent && currentSection === name) setStatus("");
     clearSectionSkeleton(name);
@@ -1282,11 +1314,12 @@ async function runSection(name, { force = false, silent = false } = {}) {
         : `ods_clickstream_app · Android · ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
     }
   } catch (error) {
+    if (!isCurrent()) return;
     if (!silent && currentSection === name) setStatus(`「${SECTION_META[name].title}」查询失败：${error.message}`, "error");
     clearSectionSkeleton(name, { failed: true });
     if (!silent && currentSection === name) setDataStatus("error", `${SECTION_META[name].title} 查询失败`);
   } finally {
-    clearSectionLoading(name);
+    if (isCurrent()) clearSectionLoading(name);
   }
 }
 
@@ -1316,6 +1349,8 @@ function setQuickRange(days) {
 
 function invalidateAll() {
   state.loadedSections = {};
+  sectionRequests.clear();
+  for (const name of Object.keys(LOADERS)) clearSectionLoading(name);
 }
 
 document.querySelectorAll(".nav-item").forEach((btn) => {
