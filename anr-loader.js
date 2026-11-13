@@ -248,6 +248,12 @@
     return { meta: { events: Object.keys(events).length, samples: samples.length }, events, samples, anrEvents };
   }
 
+  async function readSnapshot(path) {
+    const response = await fetch(path, { credentials: "include" });
+    if (!response.ok) throw new Error(`缓存读取失败 (${response.status})`);
+    return new Response(response.body.pipeThrough(new DecompressionStream("gzip"))).json();
+  }
+
   async function start() {
     try {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStart || "") || !/^\d{4}-\d{2}-\d{2}$/.test(dateEnd || "")) {
@@ -256,12 +262,41 @@
       if (window.parent === window || typeof window.parent.queryDatasets !== "function") {
         throw new Error("请从 Android APM 主看板打开 ANR 归因页");
       }
-      const result = await window.parent.queryDatasets(["anr_payload", "anr_details"], {
-        date_start: dateStart, date_end: dateEnd, use_date_end: 1,
-      });
-      const data = await build(rowsOf(result.anr_payload), rowsOf(result.anr_details));
+      let data;
+      if (params.get("live") !== "1") {
+        try {
+          const cached = await readSnapshot(`prefetch/anr/${dateStart}_${dateEnd}.json.gz`);
+          if (cached.schema !== 1 || cached.dateStart !== dateStart || cached.dateEnd !== dateEnd) {
+            throw new Error("归因缓存日期不匹配");
+          }
+          data = cached.data;
+          const shards = new Map();
+          window.readAnrLongMsg = async id => {
+            const path = data.events[id].shard;
+            if (!shards.has(path)) {
+              shards.set(path, readSnapshot(`prefetch/anr/${path}.json.gz`).catch(error => {
+                shards.delete(path);
+                throw error;
+              }));
+            }
+            const original = (await shards.get(path))[id];
+            if (typeof original !== "string") throw new Error("缓存缺少此事件原文");
+            return original;
+          };
+        } catch (_) {
+          // A custom range may not have a published snapshot.
+        }
+      }
+      const cached = Boolean(data);
+      if (!data) {
+        const result = await window.parent.queryDatasets(["anr_payload", "anr_details"], {
+          date_start: dateStart, date_end: dateEnd, use_date_end: 1,
+        });
+        data = await build(rowsOf(result.anr_payload), rowsOf(result.anr_details));
+        window.readAnrLongMsg = async id => data.events[id].longmsg;
+      }
       window.DATA = data;
-      document.getElementById("anrFoot").textContent = `${dateStart} 至 ${dateEnd}，按 event_id 去重。${data.meta.events} 条 longMsg；超过 50% CPU 的采样行 ${data.meta.samples} 条。事件明细尚未就绪的记录标记为“版本待核验”，不构造缺失正文。`;
+      document.getElementById("anrFoot").textContent = `${cached ? "每日预取 · " : ""}${dateStart} 至 ${dateEnd}，按 event_id 去重。${data.meta.events} 条 longMsg；超过 50% CPU 的采样行 ${data.meta.samples} 条。事件明细尚未就绪的记录标记为“版本待核验”，不构造缺失正文。`;
       status.hidden = true;
       const script = document.createElement("script");
       script.src = "anr-dashboard.js";

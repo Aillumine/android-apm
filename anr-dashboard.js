@@ -248,6 +248,22 @@ function anrNeedle(event, chartId) {
   if (chartId === "inputTypes") return event.inputSubtype.includes("MotionEvent") ? "MotionEvent" : event.inputSubtype.includes("FocusEvent") ? "FocusEvent" : event.inputSubtype.includes("KeyEvent") ? "KeyEvent" : "focused window";
   return event.reason.split("(")[0].trim();
 }
+function loadOriginal(details, pre, id, needle) {
+  details.addEventListener("toggle", async () => {
+    if (!details.open || pre.dataset.loaded) return;
+    pre.dataset.loaded = "1";
+    pre.textContent = "正在读取原文…";
+    try {
+      const original = await window.readAnrLongMsg(id);
+      pre.replaceChildren();
+      appendMarked(pre, original, needle);
+    } catch (error) {
+      pre.textContent = `${error.message}，请关闭后重新展开。`;
+      delete pre.dataset.loaded;
+    }
+  });
+}
+
 function renderAnrDetails(reset) {
   if (reset) { $("anrDetailList").replaceChildren(); anrOffset = 0; }
   if (!selectedAnr) {
@@ -265,12 +281,7 @@ function renderAnrDetails(reset) {
     reason.textContent = parsed.reason;
     summary.textContent = "展开完整 longMsg（对应名称标红）";
     details.append(summary, pre);
-    details.addEventListener("toggle", () => {
-      if (details.open && !pre.dataset.loaded) {
-        appendMarked(pre, event.longmsg, anrNeedle(parsed, selectedAnr.chartId));
-        pre.dataset.loaded = "1";
-      }
-    });
+    loadOriginal(details, pre, id, anrNeedle(parsed, selectedAnr.chartId));
     card.append(title, reason, details);
     fragment.append(card);
   }
@@ -367,12 +378,7 @@ function renderDetails(reset) {
     appendMarked(raw, row.raw, selected.name);
     summary.textContent = "展开上报的 longMsg 原文（对应名称标红）";
     details.append(summary, pre);
-    details.addEventListener("toggle", () => {
-      if (details.open && !pre.dataset.loaded) {
-        appendMarked(pre, event.longmsg, selected.name);
-        pre.dataset.loaded = "1";
-      }
-    });
+    loadOriginal(details, pre, row.eventId, selected.name);
     card.append(top, meta, raw, details);
     fragment.append(card);
   }

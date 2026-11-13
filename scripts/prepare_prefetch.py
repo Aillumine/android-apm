@@ -72,10 +72,11 @@ def render(sql, params):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--as-of", help="Beijing calendar date, YYYY-MM-DD; defaults to today")
+    parser.add_argument("--days", type=int, choices=range(1, 8), default=7)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     today = datetime.now(ZoneInfo("Asia/Shanghai")).date() if not args.as_of else datetime.strptime(args.as_of, "%Y-%m-%d").date()
-    params = {"date_start": str(today - timedelta(days=7)), "date_end": str(today - timedelta(days=1)),
+    params = {"date_start": str(today - timedelta(days=args.days)), "date_end": str(today - timedelta(days=1)),
               "use_date_end": 1, "jank_threshold": 10, "cold_threshold_ms": 2000}
     source = datasets_from_manifest((ROOT / "manifest.yaml").read_text(encoding="utf-8"))
     if len(source) < 44 or "anr_payload" not in source or "anr_details" not in source:

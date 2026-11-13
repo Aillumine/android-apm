@@ -1218,6 +1218,7 @@ function loadAnr() {
     date_start: params.date_start,
     date_end: params.date_end || params.date_start,
     request_id: requestId,
+    live: state.bypassSnapshot ? "1" : "0",
   });
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => finish(new Error("ANR 数据加载超时")), 5 * 60 * 1000);
