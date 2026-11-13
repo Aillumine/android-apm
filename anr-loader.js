@@ -60,7 +60,7 @@
     for (const part of parts) { raw.set(part, offset); offset += part.length; }
     const body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
     if (!body || typeof body.longmsg !== "string" || !body.longmsg.trim()) {
-      throw new Error("ANR 正文缺少 longMsg");
+      throw new Error("ANR 事件缺少完整日志");
     }
     return body;
   }
@@ -296,7 +296,7 @@
         window.readAnrLongMsg = async id => data.events[id].longmsg;
       }
       window.DATA = data;
-      document.getElementById("anrFoot").textContent = `${cached ? "每日预取 · " : ""}${dateStart} 至 ${dateEnd}，按 event_id 去重。${data.meta.events} 条 longMsg；超过 50% CPU 的采样行 ${data.meta.samples} 条。事件明细尚未就绪的记录标记为“版本待核验”，不构造缺失正文。`;
+      document.getElementById("anrFoot").textContent = `${cached ? "每日预取 · " : ""}${dateStart} 至 ${dateEnd}，共 ${data.meta.events.toLocaleString()} 起有日志的 ANR 事件。缺少版本信息的事件标记为“版本待核验”。`;
       status.hidden = true;
       const script = document.createElement("script");
       script.src = "anr-dashboard.js";

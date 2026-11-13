@@ -212,7 +212,7 @@ function renderAnrBars(chartId, noteId, groups, denominator, total, note) {
     small.textContent = percent(group.ids.length, denominator);
     value.append(small);
     button.append(name, track, value);
-    button.title = "点击查看对应事件与完整 longMsg";
+    button.title = "点击查看对应事件与完整 ANR 日志";
     button.onclick = () => {
       selectedAnr = {chartId, name: group.name, ids: group.ids};
       $("anrClear").hidden = false;
@@ -267,7 +267,7 @@ function loadOriginal(details, pre, id, needle) {
 function renderAnrDetails(reset) {
   if (reset) { $("anrDetailList").replaceChildren(); anrOffset = 0; }
   if (!selectedAnr) {
-    $("anrDetailMeta").textContent = "点击上方柱子查看事件与完整 longMsg。";
+    $("anrDetailMeta").textContent = "点击上方柱子查看事件与完整 ANR 日志。";
     $("anrMore").hidden = true;
     return;
   }
@@ -279,7 +279,7 @@ function renderAnrDetails(reset) {
     card.className = "anr-detail-card"; title.className = "topline"; reason.className = "muted";
     title.textContent = `${event.date} · ${id} · ${event.version === "verified" ? event.appVersion + " 已核实" : "版本待核验"} · 内存 ${event.ramMb == null ? "未知" : event.ramMb + " MB"} · Android ${event.osVersion === "unknown" ? "未知" : event.osVersion}`;
     reason.textContent = parsed.reason;
-    summary.textContent = "展开完整 longMsg（对应名称标红）";
+    summary.textContent = "展开完整 ANR 日志（对应名称标红）";
     details.append(summary, pre);
     loadOriginal(details, pre, id, anrNeedle(parsed, selectedAnr.chartId));
     card.append(title, reason, details);
@@ -291,6 +291,7 @@ function renderAnrDetails(reset) {
 }
 function render() {
   const ids = population(), base = qualifying(ids);
+  const highCpuEvents = new Set(base.map(row => row.eventId)).size;
   const { primaryByCategory, byCategory } = summarizeCategories(base);
   renderPie(base, primaryByCategory);
   renderCategoryBars(base, byCategory, ids.length);
@@ -313,7 +314,7 @@ function render() {
   const allNames = list.length, limit = $("limit").value;
   if (limit !== "all") list = list.slice(0, Number(limit));
   const max = Math.max(1, ...list.map(item => item.value));
-  $("chartMeta").textContent = `显示 ${list.length} / ${allNames} 个名称；${filtered.length} 条 CPU 采样；${new Set(filtered.map(row => row.eventId)).size} 条 ANR；所选范围 ${ids.length} 条 longMsg`;
+  $("chartMeta").textContent = `显示 ${list.length} / ${allNames} 个名称；${filtered.length} 条 CPU 采样；${new Set(filtered.map(row => row.eventId)).size} 条 ANR；所选范围 ${ids.length} 起 ANR`;
   $("chart").replaceChildren();
   $("chart").scrollTop = 0;
   if (!list.length) {
@@ -340,9 +341,17 @@ function render() {
   }
   $("chart").append(fragment);
   $("stats").replaceChildren();
-  for (const [number, label] of [[ids.length, "所选 longMsg"], [base.length, "超过阈值的采样行"], [new Set(base.map(row => row.eventId)).size, "命中事件"], [allNames, "匹配名称"]]) {
+  const stats = [
+    [ids.length.toLocaleString(), "有日志的 ANR 事件"],
+    [highCpuEvents.toLocaleString(), "含高 CPU 记录的 ANR 事件"],
+    [ids.length ? (highCpuEvents / ids.length).toLocaleString("zh-CN", {
+      style: "percent", maximumFractionDigits: 1,
+    }) : "—", "含高 CPU 记录的事件占比"],
+    [base.length.toLocaleString(), `CPU 超过 ${threshold()}% 的采样记录`],
+  ];
+  for (const [value, label] of stats) {
     const box = document.createElement("div"), strong = document.createElement("strong");
-    box.className = "stat"; strong.textContent = number.toLocaleString();
+    box.className = "stat"; strong.textContent = value;
     box.append(strong, document.createTextNode(label));
     $("stats").append(box);
   }
@@ -361,7 +370,7 @@ function selectEntity(item) {
 function renderDetails(reset) {
   if (reset) { $("detailList").replaceChildren(); $("detailList").scrollTop = 0; detailOffset = 0; }
   if (!selected) {
-    $("detailMeta").textContent = "点击上方名称查看对应的 CPU 行与完整 longMsg。";
+    $("detailMeta").textContent = "点击上方名称查看对应的 CPU 行与完整 ANR 日志。";
     $("more").hidden = true;
     return;
   }
@@ -376,7 +385,7 @@ function renderDetails(reset) {
     top.append(...row.categories.map(badge), document.createTextNode(`${row.eventTime} · ${row.eventId} · ${row.cpu}% · ${row.version === "verified" ? event.appVersion + " 已核实" : "版本待核验"} · 内存 ${event.ramMb == null ? "未知" : event.ramMb + " MB"} · Android ${event.osVersion === "unknown" ? "未知" : event.osVersion}`));
     meta.textContent = `原标签：${row.tagName} · CPU 段 ${row.block + 1} · ${row.relation} · ${row.blockHeader}`;
     appendMarked(raw, row.raw, selected.name);
-    summary.textContent = "展开上报的 longMsg 原文（对应名称标红）";
+    summary.textContent = "展开ANR 日志原文（对应名称标红）";
     details.append(summary, pre);
     loadOriginal(details, pre, row.eventId, selected.name);
     card.append(top, meta, raw, details);

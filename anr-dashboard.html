@@ -33,7 +33,7 @@ mark.hot{background:#e3323e;color:#fff;padding:1px 2px;border-radius:3px;font-we
 @media(max-width:750px){.categoryrow{grid-template-columns:minmax(110px,1fr) 70px;gap:7px}.categorytrack{grid-column:1/-1;grid-row:2}}
 .notice[hidden]{display:none}body{max-width:none;padding:20px 18px 50px}
 </style></head><body>
-<header><h1>ANR归因看板：高 CPU 来源与分类查询</h1><p>将高 CPU 来源合并为 10 类；按占比排序的横向柱状图可筛选原始 CPU 行和完整 longMsg。</p></header><div id="anrLoadStatus" class="notice" role="status">正在读取最近两日 ANR 数据…</div>
+<header><h1>ANR归因看板：高 CPU 来源与分类查询</h1><p>将高 CPU 来源合并为 10 类；按占比排序的横向柱状图可筛选原始 CPU 行和完整 ANR 日志。</p></header><div id="anrLoadStatus" class="notice" role="status">正在读取所选日期的 ANR 数据…</div>
 <div class="stats" id="stats"></div>
 <div class="notice"><strong>口径说明：</strong>分类表示来源或调查线索，不代表已证实的 ANR 根因。本 App 线程同时归入“本 App”与其用途类，可显示两个标签；分类柱状图占比可重叠、不能相加。饼图每行只按唯一主类计一次。进程行与其子线程行也可能重复描述同一段 CPU 活动，因此比例不是 CPU 时间占比。系统 CPU 采样可能晚于真正的卡顿。</div>
 <div class="controls">
@@ -48,10 +48,10 @@ mark.hot{background:#e3323e;color:#fff;padding:1px 2px;border-radius:3px;font-we
 <label>显示<select id="limit"><option value="all">所有名称</option><option value="25">前 25</option><option value="50">前 50</option><option value="100">前 100</option></select></label>
 <label>搜索<input id="search" type="search" placeholder="进程、线程或父进程名"></label>
 </div>
-<h2>高 CPU 来源分类</h2><p id="categoryMeta">按超过当前阈值的采样行占比从高到低排列；点击柱子筛选下方名称及完整 longMsg。搜索框仅筛选名称列表。</p><div class="sourceoverview"><div class="piepanel"><div id="pie" class="pie" role="img" aria-label="高 CPU 来源饼图"><div class="piecenter"><strong id="pieTotal">0</strong><span>采样行</span></div></div></div><div id="categoryBars" class="categorybox"></div></div>
+<h2>高 CPU 来源分类</h2><p id="categoryMeta">按超过当前阈值的采样行占比从高到低排列；点击柱子筛选下方名称及完整 ANR 日志。搜索框仅筛选名称列表。</p><div class="sourceoverview"><div class="piepanel"><div id="pie" class="pie" role="img" aria-label="高 CPU 来源饼图"><div class="piecenter"><strong id="pieTotal">0</strong><span>采样行</span></div></div></div><div id="categoryBars" class="categorybox"></div></div>
 <details id="entitySection" class="entitysection"><summary>进程与线程名称<span>点击上方分类后自动展开，也可手动展开</span></summary><div class="entitycontent"><div id="chartMeta" class="metrics"></div><div id="chart" class="chart"></div>
-<h2 id="details">对应原始事件列表</h2><div class="detailhead"><div id="detailMeta" class="metrics">点击上方名称查看对应的 CPU 行与完整 longMsg。</div><button id="clear" hidden>清除选择</button></div><div id="detailList"></div><button id="more" hidden>再加载 20 条</button></div></details>
-<h2>ANR 触发类型与组件</h2><p>以下横向柱状图按所选版本、内存和 Android 系统中的去重 ANR 事件统计，独立于 CPU 阈值。触发类型互斥；Activity 是系统报告关联的页面，不表示该页面导致 ANR。点击柱子可查看对应的事件和完整 longMsg。</p>
+<h2 id="details">对应原始事件列表</h2><div class="detailhead"><div id="detailMeta" class="metrics">点击上方名称查看对应的 CPU 行与完整 ANR 日志。</div><button id="clear" hidden>清除选择</button></div><div id="detailList"></div><button id="more" hidden>再加载 20 条</button></div></details>
+<h2>ANR 触发类型与组件</h2><p>以下横向柱状图按所选版本、内存和 Android 系统中的去重 ANR 事件统计，独立于 CPU 阈值。触发类型互斥；Activity 是系统报告关联的页面，不表示该页面导致 ANR。点击柱子可查看对应的事件和完整 ANR 日志。</p>
 <div class="anrscroller"><div class="anrgrid">
 <section class="anrpanel"><h3>触发类型</h3><p>输入、广播、Service、JobService、窗口或进程启动等系统报告原因。</p><div id="anrTypes" class="anrrows"></div><div id="anrTypesNote" class="anrnote"></div></section>
 <section class="anrpanel"><h3>输入超时细分</h3><p>仅统计 Input dispatching timed out 事件。</p><div id="inputTypes" class="anrrows"></div><div id="inputTypesNote" class="anrnote"></div></section>
@@ -60,6 +60,6 @@ mark.hot{background:#e3323e;color:#fff;padding:1px 2px;border-radius:3px;font-we
 <section class="anrpanel"><h3>广播 receiver</h3><p>仅列系统报告中出现的 cmp；未提供时明确标记。</p><div id="broadcastReceivers" class="anrrows"></div><div id="broadcastReceiversNote" class="anrnote"></div></section>
 <section class="anrpanel"><h3>Service 与 JobService 名称</h3><p>Service 执行超时列出具体类名；绑定和 Job 回调若未给类名，不作推断。</p><div id="serviceNames" class="anrrows"></div><div id="serviceNamesNote" class="anrnote"></div></section>
 </div></div>
-<h3 id="anrDetails">对应 ANR 事件</h3><div class="detailhead"><div id="anrDetailMeta" class="metrics">点击上方柱子查看事件与完整 longMsg。</div><button id="anrClear" hidden>清除选择</button></div><div id="anrDetailList"></div><button id="anrMore" hidden>再加载 50 条</button>
+<h3 id="anrDetails">对应 ANR 事件</h3><div class="detailhead"><div id="anrDetailMeta" class="metrics">点击上方柱子查看事件与完整 ANR 日志。</div><button id="anrClear" hidden>清除选择</button></div><div id="anrDetailList"></div><button id="anrMore" hidden>再加载 50 条</button>
 <div class="foot" id="anrFoot">最近两日数据加载后显示分区时效；今日分区可能尚未完成。</div>
 <script src="anr-loader.js"></script></body></html>
