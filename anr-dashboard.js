@@ -248,15 +248,34 @@ function anrNeedle(event, chartId) {
   if (chartId === "inputTypes") return event.inputSubtype.includes("MotionEvent") ? "MotionEvent" : event.inputSubtype.includes("FocusEvent") ? "FocusEvent" : event.inputSubtype.includes("KeyEvent") ? "KeyEvent" : "focused window";
   return event.reason.split("(")[0].trim();
 }
+function appendOriginal(parent, original, needle) {
+  const packageName = /com\.flow\.mobile(?![\w$])/g;
+  let offset = 0;
+  for (const match of original.matchAll(packageName)) {
+    appendMarked(parent, original.slice(offset, match.index), needle);
+    const app = document.createElement("mark");
+    app.className = "app-package";
+    app.textContent = match[0];
+    parent.append(app);
+    offset = match.index + match[0].length;
+  }
+  appendMarked(parent, original.slice(offset), needle);
+}
+
+let openOriginal;
 function loadOriginal(details, pre, id, needle) {
+  details.setAttribute("name", "anr-original");
   details.addEventListener("toggle", async () => {
-    if (!details.open || pre.dataset.loaded) return;
+    if (!details.open) return;
+    if (openOriginal && openOriginal !== details) openOriginal.open = false;
+    openOriginal = details;
+    if (pre.dataset.loaded) return;
     pre.dataset.loaded = "1";
     pre.textContent = "正在读取原文…";
     try {
       const original = await window.readAnrLongMsg(id);
       pre.replaceChildren();
-      appendMarked(pre, original, needle);
+      appendOriginal(pre, original, needle);
     } catch (error) {
       pre.textContent = `${error.message}，请关闭后重新展开。`;
       delete pre.dataset.loaded;
