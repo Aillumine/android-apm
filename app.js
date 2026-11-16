@@ -2,7 +2,7 @@ const SLUG = "android-apm";
 
 const SECTION_META = {
   stability: { title: "稳定性", desc: "前台崩溃与 ANR 分离口径、按版本与机型下钻" },
-  anr: { title: "ANR归因", desc: "完整 longMsg、CPU 来源分类与 ANR 触发组件" },
+  anr: { title: "ANR归因", desc: "完整 ANR 日志、CPU 来源分类与 ANR 触发组件" },
   frame: { title: "流畅度", desc: "app_frame_performance 卡顿率分布、最卡页面与版本对比（1% 采样）" },
   startup: { title: "冷启动", desc: "process→onCreate、onCreate 方法体、到上报点的总耗时" },
   messages: { title: "收发消息", desc: "回复完成率、首字与总耗时分位、失败原因与网络类型（1% 采样）" },
@@ -1225,6 +1225,7 @@ function loadAnr(isCurrent) {
   const frame = previous.cloneNode(false);
   frame.removeAttribute("id");
   frame.loading = "eager";
+  frame.hidden = false;
   frame.style.cssText = "position:absolute;visibility:hidden;pointer-events:none";
   const params = dateParams();
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1247,6 +1248,7 @@ function loadAnr(isCurrent) {
       }
       previous.remove();
       frame.id = "anrFrame";
+      frame.hidden = false;
       frame.removeAttribute("style");
       resolve();
     }

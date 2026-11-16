@@ -192,7 +192,7 @@
     return samples;
   }
 
-  async function build(payloadRows, detailRows) {
+  async function build(payloadRows, detailRows, { maxEvents = 5000 } = {}) {
     const groups = new Map(), detail = new Map();
     for (const row of payloadRows) {
       const id = required(row.event_id, "event_id");
@@ -208,7 +208,7 @@
       if (group.values.has(key) && group.values.get(key) !== value) throw new Error(`事件 ${id} 参数 ${key} 冲突`);
       group.values.set(key, value);
     }
-    if (groups.size > 5000) throw new Error("ANR 事件超过单次加载上限，请缩小日期区间");
+    if (groups.size > maxEvents) throw new Error("ANR 事件超过单次加载上限，请缩小日期区间");
     for (const row of detailRows) {
       const id = String(row.event_id || "");
       if (!groups.has(id) || !row.app_info_json || row.platform !== "Android") continue;
@@ -296,7 +296,7 @@
         window.readAnrLongMsg = async id => data.events[id].longmsg;
       }
       window.DATA = data;
-      document.getElementById("anrFoot").textContent = `${cached ? "每日预取 · " : ""}${dateStart} 至 ${dateEnd}，共 ${data.meta.events.toLocaleString()} 起有日志的 ANR 事件。缺少版本信息的事件标记为“版本待核验”。`;
+      document.getElementById("anrFoot").textContent = `${cached ? "每日预取 · " : ""}${dateStart} 至 ${dateEnd}，共 ${data.meta.events.toLocaleString()} 起有日志的 ANR 事件。${data.meta.conflicts ? `另有 ${data.meta.conflicts} 起日志冲突，未计入统计。` : ""}缺少版本信息的事件标记为“版本待核验”。`;
       status.hidden = true;
       const script = document.createElement("script");
       script.src = "anr-dashboard.js";

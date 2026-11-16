@@ -270,6 +270,10 @@ code {
   display: block;
 }
 
+#sec-anr { position: relative; }
+
+.anr-frame[hidden] { display: none; }
+
 .anr-frame {
   display: block;
   width: 100%;

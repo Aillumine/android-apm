@@ -50,13 +50,30 @@ const writeGzip = async (name, value) => {
   await writeFile(join(output, name + ".json.gz"), bytes);
   return bytes.length;
 };
+const dailyResults = [];
+const identities = new Map();
+const conflicts = new Set();
 let originalBytes = 0;
 for (let time = Date.parse(start); time <= Date.parse(end); time += 86400000) {
   const day = new Date(time).toISOString().slice(0, 10);
   const input = inputs.get(day);
   if (!input?.anr_payload || !input?.anr_details) throw new Error(`Missing verified date: ${day}`);
-  const daily = await window.AnrAttribution.build(input.anr_payload, input.anr_details);
-  const ids = Object.keys(daily.events);
+  const daily = await window.AnrAttribution.build(input.anr_payload, input.anr_details, { maxEvents: Infinity });
+  dailyResults.push({ day, daily });
+  for (const [id, event] of Object.entries(daily.events)) {
+    const previous = identities.get(id);
+    if (!previous) {
+      identities.set(id, event);
+    } else if (previous.eventMs !== event.eventMs || previous.longmsg !== event.longmsg) {
+      conflicts.add(id);
+    } else if (previous.version === "pending" && event.version === "verified") {
+      identities.set(id, event);
+    }
+  }
+}
+for (const { day, daily } of dailyResults) {
+  const ids = Object.keys(daily.events).filter(id => !conflicts.has(id) && identities.get(id) === daily.events[id]);
+  const selected = new Set(ids);
   for (let offset = 0; offset < ids.length; offset += 100) {
     const originals = {};
     const group = ids.slice(offset, offset + 100);
@@ -66,13 +83,14 @@ for (let time = Date.parse(start); time <= Date.parse(end); time += 86400000) {
     originalBytes += await writeGzip(shard, originals);
     for (const id of group) {
       const { longmsg, ...metadata } = daily.events[id];
-      if (Object.hasOwn(data.events, id)) throw new Error(`Duplicate event across dates: ${id}`);
       data.events[id] = { ...metadata, shard };
     }
   }
-  Object.assign(data.anrEvents, daily.anrEvents);
-  for (const sample of daily.samples) data.samples.push(sample);
+  for (const id of ids) data.anrEvents[id] = daily.anrEvents[id];
+  for (const sample of daily.samples) {
+    if (selected.has(sample.eventId)) data.samples.push(sample);
+  }
 }
-data.meta = { events: Object.keys(data.events).length, samples: data.samples.length };
+data.meta = { events: Object.keys(data.events).length, samples: data.samples.length, conflicts: conflicts.size };
 const summaryBytes = await writeGzip(`${start}_${end}`, { schema: 1, dateStart: start, dateEnd: end, data });
 console.log(JSON.stringify({ ...data.meta, summaryBytes, originalBytes }));
