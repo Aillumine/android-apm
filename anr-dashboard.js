@@ -67,6 +67,7 @@ function badge(key) {
   return b;
 }
 const APP_THREAD_PURPOSES = [
+  [/^TBBGThread$/, "IronSource Ad Quality 广告质量监测"],
   [/^secmtp_network_/, "TopOn 广告网络"],
   [/^secmtp_mediatio/, "TopOn 广告聚合"],
   [/^secmtp_tracking/, "TopOn 广告追踪"],
