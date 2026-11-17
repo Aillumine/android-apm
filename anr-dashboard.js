@@ -66,6 +66,36 @@ function badge(key) {
   b.style.color = categoryInfo(key).color;
   return b;
 }
+const APP_THREAD_PURPOSES = [
+  [/^secmtp_network_/, "TopOn 广告网络"],
+  [/^secmtp_mediatio/, "TopOn 广告聚合"],
+  [/^secmtp_tracking/, "TopOn 广告追踪"],
+  [/^AppLovinSdk:/, "AppLovin 广告后台"],
+  [/^FyberMarketplac/, "DT Exchange 广告后台"],
+  [/^ExoPlayer:Playb/, "Media3 播放调度"],
+  [/^MediaCodec(?:_loop)?$/, "Android 媒体编解码"],
+  [/^queued-work-loo(?:per)?$/, "Android 延迟任务队列"],
+  [/^clickstream-ana(?:lytics)?$/, "AWS Clickstream 埋点初始化"],
+  [/^Chrome_InProcGp/, "Chromium GPU 线程"],
+  [/^Chrome_IOThread$/, "Chromium I/O 线程"],
+  [/^flowgpt\.com\/\.\.\.$/, "FlowGPT 网络请求（疑似 OkHttp）"],
+  [/^mali-cmar-backe/, "Mali GPU 驱动后台（推断）"],
+  [/^Measurement Wor/, "Google 分析事件处理"],
+  [/^Measurement Net/, "Google 分析网络请求"],
+  [/^Jit thread pool$/, "Android ART 即时编译"],
+];
+
+function threadPurposeBadge({ kind, parent, name, tag, tagName }) {
+  if (kind !== "thread" || !(parent === "com.flow.mobile" || parent.startsWith("com.flow.mobile:"))) return [];
+  const purpose = APP_THREAD_PURPOSES.find(([pattern]) => pattern.test(name));
+  const existingPurpose = tag === "other_app_thread" ? null : tagName;
+  const label = document.createElement("span");
+  label.className = "badge";
+  label.textContent = purpose?.[1] || existingPurpose || "用途待确认";
+  label.style.background = "#ede9fe";
+  label.style.color = "#5b21b6";
+  return [label];
+}
 function appendMarked(parent, value, needle) {
   const text = value || "";
   if (!needle) { parent.append(document.createTextNode(text)); return; }
@@ -350,7 +380,7 @@ function render() {
   const entities = new Map();
   for (const row of filtered) {
     const key = entityKey(row);
-    if (!entities.has(key)) entities.set(key, {key, kind: row.kind, parent: row.parent, name: row.name, category: row.category, categories: new Set(), samples: 0, ids: new Set(), max: 0});
+    if (!entities.has(key)) entities.set(key, {key, kind: row.kind, parent: row.parent, name: row.name, tag: row.tag, tagName: row.tagName, category: row.category, categories: new Set(), samples: 0, ids: new Set(), max: 0});
     const item = entities.get(key);
     row.categories.forEach(label => item.categories.add(label));
     item.samples++;
@@ -382,7 +412,7 @@ function render() {
   for (const item of list) {
     const row = document.createElement("div"), button = document.createElement("button"), track = document.createElement("div"), bar = document.createElement("div"), count = document.createElement("div"), minor = document.createElement("small");
     row.className = "barrow"; button.className = "entity"; track.className = "track"; bar.className = "bar"; count.className = "counts";
-    button.append(...[...item.categories].map(badge), document.createTextNode((item.kind === "thread" ? item.parent + " / " : "") + item.name));
+    button.append(...[...item.categories].map(badge), ...threadPurposeBadge(item), document.createTextNode((item.kind === "thread" ? item.parent + " / " : "") + item.name));
     button.title = "查看原始事件列表";
     button.onclick = () => selectEntity(item);
     bar.style.background = categoryInfo(item.category).color;
@@ -437,7 +467,7 @@ function renderDetails(reset) {
     const card = document.createElement("div"), top = document.createElement("div"), meta = document.createElement("div"), raw = document.createElement("div"), details = document.createElement("details"), summary = document.createElement("summary"), pre = document.createElement("pre");
     const event = DATA.events[row.eventId];
     card.className = "detailitem"; top.className = "topline"; meta.className = "muted"; raw.className = "rawline";
-    top.append(...row.categories.map(badge), document.createTextNode(`${row.eventTime} · ${row.eventId} · ${row.cpu}% · ${row.version === "verified" ? event.appVersion + " 已核实" : "版本待核验"} · 内存 ${event.ramMb == null ? "未知" : event.ramMb + " MB"} · Android ${event.osVersion === "unknown" ? "未知" : event.osVersion}`));
+    top.append(...row.categories.map(badge), ...threadPurposeBadge(row), document.createTextNode(`${row.eventTime} · ${row.eventId} · ${row.cpu}% · ${row.version === "verified" ? event.appVersion + " 已核实" : "版本待核验"} · 内存 ${event.ramMb == null ? "未知" : event.ramMb + " MB"} · Android ${event.osVersion === "unknown" ? "未知" : event.osVersion}`));
     meta.textContent = `原标签：${row.tagName} · CPU 段 ${row.block + 1} · ${row.relation} · ${row.blockHeader}`;
     appendMarked(raw, row.raw, selected.name);
     summary.textContent = "展开ANR 日志原文（对应名称标红）";
