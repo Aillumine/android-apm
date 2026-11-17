@@ -24,6 +24,8 @@ function fixture(version = "2.2.15") {
     "CPU usage from 0ms to 1000ms later (2026-11-04 09:00:00.000 to 2026-11-04 09:00:01.000):",
     "  102% 5616/com.flow.mobile: 28% user + 73% kernel",
     "    55% 6142/AdWorker(Client: 30% user + 25% kernel",
+    "    2% 6143/worker: 2% user + 0% kernel",
+    "    1% 6144/idle: 1% user + 0% kernel",
     "   +0% 7839/AdWorker(Defaul: 0% user + 0% kernel",
   ].join("\n");
   const base64 = gzipSync(Buffer.from(JSON.stringify({ longmsg, main_stack: "main stack" }))).toString("base64");
@@ -49,7 +51,7 @@ test("decodes chunks and builds the ANR component and high CPU samples", async (
   assert.equal(data.events["event-1"].ramBucket, "3to4");
   assert.equal(data.anrEvents["event-1"].activity, "com.flow.mobile.MainActivity");
   assert.equal(data.anrEvents["event-1"].trigger, "input");
-  assert.deepEqual(Array.from(data.samples, row => row.cpu), [102, 55]);
+  assert.deepEqual(Array.from(data.samples, row => row.cpu), [102, 55, 2]);
 });
 
 test("rejects a missing chunk and conflicting duplicate values", async () => {

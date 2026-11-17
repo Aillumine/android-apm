@@ -91,6 +91,6 @@ for (const { day, daily } of dailyResults) {
     if (selected.has(sample.eventId)) data.samples.push(sample);
   }
 }
-data.meta = { events: Object.keys(data.events).length, samples: data.samples.length, conflicts: conflicts.size };
+data.meta = { cpuMin: 1, events: Object.keys(data.events).length, samples: data.samples.length, conflicts: conflicts.size };
 const summaryBytes = await writeGzip(`${start}_${end}`, { schema: 1, dateStart: start, dateEnd: end, data });
 console.log(JSON.stringify({ ...data.meta, summaryBytes, originalBytes }));

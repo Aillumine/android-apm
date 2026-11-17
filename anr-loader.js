@@ -155,7 +155,8 @@
     return info;
   }
 
-  function cpuSamples(eventId, event) {
+  function cpuSamples(eventId, event, reason = anrInfo(event.longmsg).reason) {
+    const eventTime = new Date(event.eventMs).toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).replace(" ", "T") + "+08:00";
     const samples = [], lines = event.longmsg.split("\n");
     const report = /Android time\s*:\s*\[([\d-]+ [\d:.]+)\]/.exec(event.longmsg)?.[1];
     const reportTime = report ? Date.parse(report.replace(" ", "T")) : NaN;
@@ -178,15 +179,15 @@
       const thread = /^    \+?(\d+(?:\.\d+)?)%\s+(\d+)\/(.+?):\s+(?=\d+(?:\.\d+)?%\s+(?:user|kernel)\b)/.exec(line);
       if (process) parent = process[3];
       const entry = process || thread;
-      if (!entry || Number(entry[1]) <= 50) continue;
+      if (!entry || Number(entry[1]) <= 1) continue;
       const kind = process ? "process" : "thread";
       const owner = process ? "" : parent;
       const [tag, tagName] = classify(kind, entry[3], owner);
       samples.push({ eventId, date: event.date,
-        eventTime: new Date(event.eventMs).toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).replace(" ", "T") + "+08:00",
+        eventTime,
         version: event.version, kind, scope: (owner || entry[3]).includes("com.flow.mobile") ? "app" : "other",
         parent: owner, name: entry[3], cpu: Number(entry[1]), pidTid: entry[2], block,
-        durationMs, blockHeader: header, relation, raw: line.trim(), reason: anrInfo(event.longmsg).reason,
+        durationMs, blockHeader: header, relation, raw: line.trim(), reason,
         tag, tagName });
     }
     return samples;
@@ -242,10 +243,10 @@
         ramMb: ram, ramBucket: bucket(ram) };
       events[id] = event;
       anrEvents[id] = anrInfo(body.longmsg);
-      samples.push(...cpuSamples(id, event));
+      samples.push(...cpuSamples(id, event, anrEvents[id].reason));
     }
     samples.sort((a, b) => a.eventTime.localeCompare(b.eventTime) || a.eventId.localeCompare(b.eventId) || a.block - b.block || b.cpu - a.cpu);
-    return { meta: { events: Object.keys(events).length, samples: samples.length }, events, samples, anrEvents };
+    return { meta: { cpuMin: 1, events: Object.keys(events).length, samples: samples.length }, events, samples, anrEvents };
   }
 
   async function readSnapshot(path) {

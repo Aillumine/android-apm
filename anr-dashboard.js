@@ -89,9 +89,13 @@ function population() {
       && (os === "all" || event.osVersion === os);
   });
 }
+const cpuMin = DATA.meta.cpuMin ?? 50;
+$("thresholdRange").min = cpuMin;
+$("thresholdNumber").min = cpuMin;
+
 function threshold() {
   const value = Number($("thresholdNumber").value);
-  return Number.isFinite(value) ? Math.max(50, Math.min(450, value)) : 50;
+  return Number.isFinite(value) ? Math.max(cpuMin, Math.min(450, value)) : 50;
 }
 function qualifying(allowed) {
   const ids = new Set(allowed), kind = $("kind").value, scope = $("scope").value, min = threshold();
