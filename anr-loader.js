@@ -272,6 +272,15 @@
           }
           data = cached.data;
           const shards = new Map();
+          window.readLowCpuSamples = async () => {
+            const days = await Promise.all((data.meta.lowCpuFiles || []).map(file =>
+              readSnapshot(`prefetch/anr/${file}.json.gz`)));
+            return days.flatMap(rows => rows.map(([eventId, kind, scope, parent, name, cpu, block, blockHeader, relation, raw, tag, tagName]) => {
+              const event = data.events[eventId];
+              return { eventId, kind, scope, parent, name, cpu, block, blockHeader, relation, raw, tag, tagName,
+                eventTime: new Date(event.eventMs).toISOString(), version: event.version };
+            }));
+          };
           window.readAnrLongMsg = async id => {
             const path = data.events[id].shard;
             if (!shards.has(path)) {

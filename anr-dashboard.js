@@ -50,11 +50,12 @@ const $ = id => document.getElementById(id);
 let selected = null;
 let detailRows = [];
 let detailOffset = 0;
-for (const row of DATA.samples) {
+function classifySample(row) {
   const membership = categoriesFor(row);
   row.category = membership.primary;
   row.categories = membership.labels;
 }
+DATA.samples.forEach(classifySample);
 
 function categoryInfo(key) { return CATEGORY[key]; }
 function badge(key) {
@@ -312,7 +313,27 @@ function renderAnrDetails(reset) {
   anrOffset += slice.length;
   $("anrMore").hidden = anrOffset >= anrRows.length;
 }
+let lowCpuRequest;
+let lowCpuReady = !DATA.meta.lowCpuFiles?.length;
 function render() {
+  if (threshold() < 50 && !lowCpuReady) {
+    if (lowCpuRequest) return;
+    const status = $("anrLoadStatus");
+    status.hidden = false;
+    status.textContent = "正在读取低 CPU 采样…";
+    lowCpuRequest = window.readLowCpuSamples().then(rows => {
+      for (const row of rows) {
+        classifySample(row);
+        DATA.samples.push(row);
+      }
+      lowCpuReady = true;
+      status.hidden = true;
+      render();
+    }).catch(error => {
+      status.textContent = `低 CPU 采样加载失败：${error.message}`;
+    }).finally(() => { lowCpuRequest = null; });
+    return;
+  }
   const ids = population(), base = qualifying(ids);
   const highCpuEvents = new Set(base.map(row => row.eventId)).size;
   const { primaryByCategory, byCategory } = summarizeCategories(base);

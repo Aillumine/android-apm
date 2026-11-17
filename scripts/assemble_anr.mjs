@@ -53,6 +53,7 @@ const writeGzip = async (name, value) => {
 const dailyResults = [];
 const identities = new Map();
 const conflicts = new Set();
+const lowCpuFiles = [];
 let originalBytes = 0;
 for (let time = Date.parse(start); time <= Date.parse(end); time += 86400000) {
   const day = new Date(time).toISOString().slice(0, 10);
@@ -87,10 +88,21 @@ for (const { day, daily } of dailyResults) {
     }
   }
   for (const id of ids) data.anrEvents[id] = daily.anrEvents[id];
+  const lowCpu = [];
   for (const sample of daily.samples) {
-    if (selected.has(sample.eventId)) data.samples.push(sample);
+    if (!selected.has(sample.eventId)) continue;
+    if (sample.cpu > 50) data.samples.push(sample);
+    else {
+      const { eventId, kind, scope, parent, name, cpu, block, blockHeader, relation, raw, tag, tagName } = sample;
+      lowCpu.push([eventId, kind, scope, parent, name, cpu, block, blockHeader, relation, raw, tag, tagName]);
+    }
+  }
+  if (lowCpu.length) {
+    const file = `cpu-${start}_${end}-${day}`;
+    await writeGzip(file, lowCpu);
+    lowCpuFiles.push(file);
   }
 }
-data.meta = { cpuMin: 1, events: Object.keys(data.events).length, samples: data.samples.length, conflicts: conflicts.size };
+data.meta = { cpuMin: 1, lowCpuFiles, events: Object.keys(data.events).length, samples: data.samples.length, conflicts: conflicts.size };
 const summaryBytes = await writeGzip(`${start}_${end}`, { schema: 1, dateStart: start, dateEnd: end, data });
 console.log(JSON.stringify({ ...data.meta, summaryBytes, originalBytes }));
