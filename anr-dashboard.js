@@ -313,6 +313,10 @@ function renderAnrDetails(reset) {
   anrOffset += slice.length;
   $("anrMore").hidden = anrOffset >= anrRows.length;
 }
+let entityPage = 0;
+const entityPageSize = 250;
+$("entityPrevious").onclick = () => { entityPage--; render(); };
+$("entityNext").onclick = () => { entityPage++; render(); };
 let lowCpuRequest;
 let lowCpuReady = !DATA.meta.lowCpuFiles?.length;
 function render() {
@@ -357,8 +361,15 @@ function render() {
     .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name));
   const allNames = list.length, limit = $("limit").value;
   if (limit !== "all") list = list.slice(0, Number(limit));
-  const max = Math.max(1, ...list.map(item => item.value));
-  $("chartMeta").textContent = `显示 ${list.length} / ${allNames} 个名称；${filtered.length} 条 CPU 采样；${new Set(filtered.map(row => row.eventId)).size} 条 ANR；所选范围 ${ids.length} 起 ANR`;
+  const max = Math.max(1, list[0]?.value ?? 0);
+  const pageCount = Math.max(1, Math.ceil(list.length / entityPageSize));
+  entityPage = Math.min(entityPage, pageCount - 1);
+  const pageStart = entityPage * entityPageSize;
+  list = list.slice(pageStart, pageStart + entityPageSize);
+  $("entityPrevious").disabled = entityPage === 0;
+  $("entityNext").disabled = entityPage >= pageCount - 1;
+  $("entityPages").hidden = pageCount <= 1;
+  $("chartMeta").textContent = `显示 ${list.length ? pageStart + 1 : 0}–${pageStart + list.length} / ${allNames} 个名称；${filtered.length} 条 CPU 采样；${new Set(filtered.map(row => row.eventId)).size} 条 ANR；所选范围 ${ids.length} 起 ANR`;
   $("chart").replaceChildren();
   $("chart").scrollTop = 0;
   if (!list.length) {

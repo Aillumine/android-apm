@@ -50,7 +50,7 @@ mark.hot{background:#e3323e;color:#fff;padding:1px 2px;border-radius:3px;font-we
 <label>搜索<input id="search" type="search" placeholder="进程、线程或父进程名"></label>
 </div>
 <h2>高 CPU 来源分类</h2><p id="categoryMeta">按超过当前阈值的采样行占比从高到低排列；点击柱子筛选下方名称及完整 ANR 日志。搜索框仅筛选名称列表。</p><div class="sourceoverview"><div class="piepanel"><div id="pie" class="pie" role="img" aria-label="高 CPU 来源饼图"><div class="piecenter"><strong id="pieTotal">0</strong><span>采样行</span></div></div></div><div id="categoryBars" class="categorybox"></div></div>
-<details id="entitySection" class="entitysection"><summary>进程与线程名称<span>点击上方分类后自动展开，也可手动展开</span></summary><div class="entitycontent"><div id="chartMeta" class="metrics"></div><div id="chart" class="chart"></div>
+<details id="entitySection" class="entitysection"><summary>进程与线程名称<span>点击上方分类后自动展开，也可手动展开</span></summary><div class="entitycontent"><div id="chartMeta" class="metrics"></div><div id="chart" class="chart"></div><div id="entityPages" hidden><button id="entityPrevious">上一页</button> <button id="entityNext">下一页</button></div>
 <h2 id="details">对应原始事件列表</h2><div class="detailhead"><div id="detailMeta" class="metrics">点击上方名称查看对应的 CPU 行与完整 ANR 日志。</div><button id="clear" hidden>清除选择</button></div><div id="detailList"></div><button id="more" hidden>再加载 20 条</button></div></details>
 <h2>ANR 触发类型与组件</h2><p>以下横向柱状图按所选版本、内存和 Android 系统中的去重 ANR 事件统计，独立于 CPU 阈值。触发类型互斥；Activity 是系统报告关联的页面，不表示该页面导致 ANR。点击柱子可查看对应的事件和完整 ANR 日志。</p>
 <div class="anrscroller"><div class="anrgrid">
