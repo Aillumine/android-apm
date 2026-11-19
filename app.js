@@ -1311,8 +1311,12 @@ async function runSection(name, { force = false, silent = false } = {}) {
     if (!silent && currentSection === name) setStatus("");
     clearSectionSkeleton(name);
     if (!silent && currentSection === name) {
-      const partial = window.ApmPrefetch?.info()?.complete === false;
-      setDataStatus("ok", cached ? (partial ? "今日部分预加载 · 其余板块实时查询" : "每日预加载数据 · Android")
+      const snapshot = window.ApmPrefetch?.info();
+      const partial = snapshot?.complete === false;
+      const cacheLabel = snapshot?.dateEnd < beijingDate(-1)
+        ? `预取尚未更新 · 当前显示 ${snapshot.dateStart} 至 ${snapshot.dateEnd}`
+        : (partial ? "今日部分预加载 · 其余板块实时查询" : "每日预加载数据 · Android");
+      setDataStatus("ok", cached ? cacheLabel
         : `ods_clickstream_app · Android · ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
     }
   } catch (error) {
@@ -1448,6 +1452,19 @@ window.addEventListener("resize", resizeAll);
 async function bootstrap() {
   setQuickRange(7);
   await window.ApmPrefetch?.load();
+  const snapshot = window.ApmPrefetch?.info();
+  const snapshotParams = snapshot && {
+    date_start: snapshot.dateStart, date_end: snapshot.dateEnd, use_date_end: 1,
+  };
+  if (snapshot && /^\d{4}-\d{2}-\d{2}$/.test(snapshot.dateStart) &&
+      /^\d{4}-\d{2}-\d{2}$/.test(snapshot.dateEnd) &&
+      Date.parse(snapshot.dateEnd) - Date.parse(snapshot.dateStart) === 6 * 86400000 &&
+      snapshot.dateEnd < beijingDate(-1) &&
+      window.ApmPrefetch.lookup(["crash_overview", "crash_daily", "crash_breakdown"], snapshotParams)) {
+    $("startDate").value = snapshot.dateStart;
+    $("endDate").value = snapshot.dateEnd;
+    document.querySelectorAll("#quickRange .quick-chip").forEach(chip => chip.classList.remove("active"));
+  }
   await switchSection("stability");
   if (!state.bypassSnapshot) {
     for (const name of Object.keys(LOADERS)) {

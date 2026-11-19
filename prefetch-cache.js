@@ -38,7 +38,7 @@
 
   function info() {
     return snapshot && { complete: snapshot.complete !== false,
-      missing: snapshot.missing_datasets || [], generatedAt: snapshot.generated_at };
+      missing: snapshot.missing_datasets || [], dateStart: snapshot.date_start, dateEnd: snapshot.date_end, generatedAt: snapshot.generated_at };
   }
 
   async function load() {

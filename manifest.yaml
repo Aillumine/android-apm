@@ -14,18 +14,34 @@ params:
     default: 10
   cold_threshold_ms:
     default: 2000
+# Clickstream cutover uses disjoint date ranges to preserve historical queries.
+# Before 2026-11-10 use the legacy pair, from that date use v2 event_params.
 datasets:
   # ---------- 流畅度（app_frame_performance，1% 采样） ----------
   frame_overview:
     params: [date_start, date_end, use_date_end, jank_threshold]
     sql: |
-      WITH f AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_frame_performance')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_frame_performance')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      f AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'jank_percent' THEN CAST(event_param_value AS DOUBLE) END) AS jank_percent,
           MAX(CASE WHEN event_param_key = 'max_frame_ms' THEN CAST(event_param_value AS DOUBLE) END) AS max_frame_ms,
           MAX(CASE WHEN event_param_key = 'avg_overrun_ms' THEN CAST(event_param_value AS DOUBLE) END) AS avg_overrun_ms,
           MAX(CASE WHEN event_param_key = 'total_frames' THEN CAST(event_param_value AS DOUBLE) END) AS total_frames
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_frame_performance'
           AND event_param_key IN ('jank_percent','max_frame_ms','avg_overrun_ms','total_frames')
           AND event_date >= :date_start
@@ -48,10 +64,24 @@ datasets:
   frame_percentiles:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH f AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_frame_performance')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_frame_performance')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      f AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'jank_percent' THEN CAST(event_param_value AS DOUBLE) END) AS jank_percent
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_frame_performance'
           AND event_param_key = 'jank_percent'
           AND event_date >= :date_start
@@ -72,12 +102,26 @@ datasets:
   frame_by_screen:
     params: [date_start, date_end, use_date_end, jank_threshold]
     sql: |
-      WITH f AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_frame_performance')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_frame_performance')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      f AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'jank_percent' THEN CAST(event_param_value AS DOUBLE) END) AS jank_percent,
           MAX(CASE WHEN event_param_key = 'max_frame_ms' THEN CAST(event_param_value AS DOUBLE) END) AS max_frame_ms,
           MAX(CASE WHEN event_param_key = 'screen' THEN event_param_value END) AS screen
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_frame_performance'
           AND event_param_key IN ('jank_percent','max_frame_ms','screen')
           AND event_date >= :date_start
@@ -101,10 +145,33 @@ datasets:
   frame_daily_by_version:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH f AS (
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_frame_performance')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_frame_performance')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_frame_performance')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_frame_performance')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      f AS (
         SELECT event_date, event_id,
           MAX(CASE WHEN event_param_key = 'jank_percent' THEN CAST(event_param_value AS DOUBLE) END) AS jank_percent
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_frame_performance'
           AND event_param_key = 'jank_percent'
           AND event_date >= :date_start
@@ -114,7 +181,7 @@ datasets:
       ),
       v AS (
         SELECT event_id, get_json_string(app_info, '$.version') AS app_version
-        FROM ods_original.ods_clickstream_app_event_di
+        FROM apm_events
         WHERE event_name = 'app_frame_performance'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -136,11 +203,34 @@ datasets:
   frame_by_version:
     params: [date_start, date_end, use_date_end, jank_threshold]
     sql: |
-      WITH f AS (
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_frame_performance')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_frame_performance')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_frame_performance')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_frame_performance')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      f AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'jank_percent' THEN CAST(event_param_value AS DOUBLE) END) AS jank_percent,
           MAX(CASE WHEN event_param_key = 'max_frame_ms' THEN CAST(event_param_value AS DOUBLE) END) AS max_frame_ms
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_frame_performance'
           AND event_param_key IN ('jank_percent','max_frame_ms')
           AND event_date >= :date_start
@@ -150,7 +240,7 @@ datasets:
       ),
       v AS (
         SELECT event_id, get_json_string(app_info, '$.version') AS app_version
-        FROM ods_original.ods_clickstream_app_event_di
+        FROM apm_events
         WHERE event_name = 'app_frame_performance'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -175,13 +265,27 @@ datasets:
   startup_overview:
     params: [date_start, date_end, use_date_end, cold_threshold_ms]
     sql: |
-      WITH c AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_launch_cold')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_launch_cold')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      c AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'startup_process_to_create_ms' THEN CAST(event_param_value AS DOUBLE) END) AS process_to_create_ms,
           MAX(CASE WHEN event_param_key = 'startup_oncreate_cost_ms' THEN CAST(event_param_value AS DOUBLE) END) AS oncreate_cost_ms,
           MAX(CASE WHEN event_param_key = 'startup_to_cold_event_ms' THEN CAST(event_param_value AS DOUBLE) END) AS to_cold_event_ms,
           MAX(CASE WHEN event_param_key = 'startup_first_frame_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_frame_ms
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_launch_cold'
           AND event_param_key IN ('startup_process_to_create_ms','startup_oncreate_cost_ms','startup_to_cold_event_ms','startup_first_frame_ms')
           AND event_date >= :date_start
@@ -207,12 +311,26 @@ datasets:
   startup_daily:
     params: [date_start, date_end, use_date_end, cold_threshold_ms]
     sql: |
-      WITH c AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_launch_cold')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_launch_cold')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      c AS (
         SELECT event_date, event_id,
           MAX(CASE WHEN event_param_key = 'startup_process_to_create_ms' THEN CAST(event_param_value AS DOUBLE) END) AS process_to_create_ms,
           MAX(CASE WHEN event_param_key = 'startup_oncreate_cost_ms' THEN CAST(event_param_value AS DOUBLE) END) AS oncreate_cost_ms,
           MAX(CASE WHEN event_param_key = 'startup_to_cold_event_ms' THEN CAST(event_param_value AS DOUBLE) END) AS to_cold_event_ms
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_launch_cold'
           AND event_param_key IN ('startup_process_to_create_ms','startup_oncreate_cost_ms','startup_to_cold_event_ms')
           AND event_date >= :date_start
@@ -234,12 +352,35 @@ datasets:
   startup_by_version:
     params: [date_start, date_end, use_date_end, cold_threshold_ms]
     sql: |
-      WITH c AS (
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_launch_cold')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_launch_cold')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_launch_cold')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_launch_cold')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      c AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'startup_process_to_create_ms' THEN CAST(event_param_value AS DOUBLE) END) AS process_to_create_ms,
           MAX(CASE WHEN event_param_key = 'startup_oncreate_cost_ms' THEN CAST(event_param_value AS DOUBLE) END) AS oncreate_cost_ms,
           MAX(CASE WHEN event_param_key = 'startup_to_cold_event_ms' THEN CAST(event_param_value AS DOUBLE) END) AS to_cold_event_ms
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_launch_cold'
           AND event_param_key IN ('startup_process_to_create_ms','startup_oncreate_cost_ms','startup_to_cold_event_ms')
           AND event_date >= :date_start
@@ -248,7 +389,7 @@ datasets:
       ),
       v AS (
         SELECT event_id, get_json_string(app_info, '$.version') AS app_version
-        FROM ods_original.ods_clickstream_app_event_di
+        FROM apm_events
         WHERE event_name = 'app_launch_cold'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -273,10 +414,33 @@ datasets:
   startup_by_model:
     params: [date_start, date_end, use_date_end, cold_threshold_ms]
     sql: |
-      WITH c AS (
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_launch_cold')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_launch_cold')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_launch_cold')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_launch_cold')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      c AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'startup_to_cold_event_ms' THEN CAST(event_param_value AS DOUBLE) END) AS to_cold_event_ms
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_launch_cold'
           AND event_param_key = 'startup_to_cold_event_ms'
           AND event_date >= :date_start
@@ -288,7 +452,7 @@ datasets:
           get_json_string(device, '$.mobile_brand_name') AS brand,
           get_json_string(device, '$.mobile_model_name') AS model,
           get_json_string(device, '$.operating_system_version') AS os_version
-        FROM ods_original.ods_clickstream_app_event_di
+        FROM apm_events
         WHERE event_name = 'app_launch_cold'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -311,10 +475,33 @@ datasets:
   startup_by_os:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH c AS (
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_launch_cold')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_launch_cold')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_launch_cold')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_launch_cold')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      c AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'startup_to_cold_event_ms' THEN CAST(event_param_value AS DOUBLE) END) AS to_cold_event_ms
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_launch_cold'
           AND event_param_key = 'startup_to_cold_event_ms'
           AND event_date >= :date_start
@@ -323,7 +510,7 @@ datasets:
       ),
       d AS (
         SELECT event_id, get_json_string(device, '$.operating_system_version') AS os_version
-        FROM ods_original.ods_clickstream_app_event_di
+        FROM apm_events
         WHERE event_name = 'app_launch_cold'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -346,11 +533,34 @@ datasets:
   crash_overview:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH meta AS (
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_crash', 'app_launch_cold')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_crash', 'app_launch_cold')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_crash')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_crash')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      meta AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'exit_reason' THEN event_param_value END) AS exit_reason,
           MAX(CASE WHEN event_param_key = 'process_importance' THEN event_param_value END) AS process_importance
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_crash'
           AND event_param_key IN ('exit_reason', 'process_importance')
           AND event_date >= :date_start
@@ -363,7 +573,7 @@ datasets:
                     AND REGEXP(m.process_importance, '^[0-9]+$')
                     AND CAST(m.process_importance AS INT) <= 200
                THEN 1 ELSE 0 END AS is_foreground
-        FROM ods_original.ods_clickstream_app_event_di e
+        FROM apm_events e
         JOIN meta m ON m.event_id = e.event_id
         WHERE e.event_name = 'app_crash'
           AND e.platform = 'Android'
@@ -386,7 +596,7 @@ datasets:
       ),
       launches AS (
         SELECT COUNT(*) AS launches, COUNT(DISTINCT user_pseudo_id) AS launch_users
-        FROM ods_original.ods_clickstream_app_event_di
+        FROM apm_events
         WHERE event_name = 'app_launch_cold'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -406,11 +616,34 @@ datasets:
   crash_daily:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH meta AS (
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_crash', 'app_launch_cold')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_crash', 'app_launch_cold')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_crash')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_crash')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      meta AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'exit_reason' THEN event_param_value END) AS exit_reason,
           MAX(CASE WHEN event_param_key = 'process_importance' THEN event_param_value END) AS process_importance
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_crash'
           AND event_param_key IN ('exit_reason', 'process_importance')
           AND event_date >= :date_start
@@ -423,7 +656,7 @@ datasets:
           COUNT(DISTINCT CASE WHEN m.exit_reason IN ('jvm', 'native') AND CAST(m.process_importance AS INT) <= 200 THEN e.user_pseudo_id END) AS fg_crash_users,
           SUM(CASE WHEN m.exit_reason = 'anr' AND CAST(m.process_importance AS INT) <= 200 THEN 1 ELSE 0 END) AS fg_anr_count,
           COUNT(DISTINCT CASE WHEN m.exit_reason = 'anr' AND CAST(m.process_importance AS INT) <= 200 THEN e.user_pseudo_id END) AS fg_anr_users
-        FROM ods_original.ods_clickstream_app_event_di e
+        FROM apm_events e
         JOIN meta m ON m.event_id = e.event_id
         WHERE e.event_name = 'app_crash'
           AND e.platform = 'Android'
@@ -435,7 +668,7 @@ datasets:
       ),
       launches AS (
         SELECT event_date, COUNT(*) AS launches, COUNT(DISTINCT user_pseudo_id) AS launch_users
-        FROM ods_original.ods_clickstream_app_event_di
+        FROM apm_events
         WHERE event_name = 'app_launch_cold'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -457,12 +690,26 @@ datasets:
   crash_breakdown:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH c AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_crash')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_crash')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      c AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'exit_reason' THEN event_param_value END) AS exit_reason,
           MAX(CASE WHEN event_param_key = 'detection_source' THEN event_param_value END) AS detection_source,
           MAX(CASE WHEN event_param_key = 'process_importance' THEN event_param_value END) AS process_importance
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_crash'
           AND event_param_key IN ('exit_reason', 'detection_source', 'process_importance')
           AND event_date >= :date_start
@@ -490,11 +737,34 @@ datasets:
   crash_by_version:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH meta AS (
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_crash', 'app_launch_cold')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_crash', 'app_launch_cold')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_crash')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_crash')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      meta AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'exit_reason' THEN event_param_value END) AS exit_reason,
           MAX(CASE WHEN event_param_key = 'process_importance' THEN event_param_value END) AS process_importance
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_crash'
           AND event_param_key IN ('exit_reason', 'process_importance')
           AND event_date >= :date_start
@@ -508,7 +778,7 @@ datasets:
           SUM(CASE WHEN m.exit_reason = 'anr' AND CAST(m.process_importance AS INT) <= 200 THEN 1 ELSE 0 END) AS fg_anr_count,
           COUNT(DISTINCT CASE WHEN m.exit_reason = 'anr' AND CAST(m.process_importance AS INT) <= 200 THEN e.user_pseudo_id END) AS fg_anr_users,
           COUNT(DISTINCT CASE WHEN m.exit_reason = 'anr' THEN e.user_pseudo_id END) AS anr_users
-        FROM ods_original.ods_clickstream_app_event_di e
+        FROM apm_events e
         JOIN meta m ON m.event_id = e.event_id
         WHERE e.event_name = 'app_crash'
           AND e.platform = 'Android'
@@ -525,7 +795,7 @@ datasets:
       launches AS (
         SELECT get_json_string(app_info, '$.version') AS app_version,
           COUNT(*) AS launches, COUNT(DISTINCT user_pseudo_id) AS launch_users
-        FROM ods_original.ods_clickstream_app_event_di
+        FROM apm_events
         WHERE event_name = 'app_launch_cold'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -554,11 +824,34 @@ datasets:
   crash_by_model:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH meta AS (
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_crash', 'app_launch_cold')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_crash', 'app_launch_cold')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_crash')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_crash')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      meta AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'exit_reason' THEN event_param_value END) AS exit_reason,
           MAX(CASE WHEN event_param_key = 'process_importance' THEN event_param_value END) AS process_importance
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'app_crash'
           AND event_param_key IN ('exit_reason', 'process_importance')
           AND event_date >= :date_start
@@ -572,7 +865,7 @@ datasets:
           get_json_string(e.device, '$.operating_system_version') AS os_version,
           COUNT(DISTINCT CASE WHEN m.exit_reason IN ('jvm', 'native') AND CAST(m.process_importance AS INT) <= 200 THEN e.user_pseudo_id END) AS fg_crash_users,
           COUNT(DISTINCT CASE WHEN m.exit_reason = 'anr' AND CAST(m.process_importance AS INT) <= 200 THEN e.user_pseudo_id END) AS fg_anr_users
-        FROM ods_original.ods_clickstream_app_event_di e
+        FROM apm_events e
         JOIN meta m ON m.event_id = e.event_id
         WHERE e.event_name = 'app_crash'
           AND e.platform = 'Android'
@@ -588,7 +881,7 @@ datasets:
           get_json_string(device, '$.mobile_model_name') AS model,
           get_json_string(device, '$.operating_system_version') AS os_version,
           COUNT(DISTINCT user_pseudo_id) AS launch_users
-        FROM ods_original.ods_clickstream_app_event_di
+        FROM apm_events
         WHERE event_name = 'app_launch_cold'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -614,14 +907,28 @@ datasets:
   msg_overview:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH s AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('chat_stream_result')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('chat_stream_result')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      s AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'result' THEN event_param_value END) AS result,
           MAX(CASE WHEN event_param_key = 'interrupt_reason' THEN event_param_value END) AS interrupt_reason,
           MAX(CASE WHEN event_param_key = 'total_ms' THEN CAST(event_param_value AS DOUBLE) END) AS total_ms,
           MAX(CASE WHEN event_param_key = 'first_content_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_content_ms,
           MAX(CASE WHEN event_param_key = 'exit_during_stream' THEN event_param_value END) AS exit_during_stream
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'chat_stream_result'
           AND event_param_key IN ('result', 'interrupt_reason', 'total_ms', 'first_content_ms', 'exit_during_stream')
           AND event_date >= :date_start
@@ -647,13 +954,27 @@ datasets:
   msg_daily:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH s AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('chat_stream_result')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('chat_stream_result')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      s AS (
         SELECT event_date, event_id,
           MAX(CASE WHEN event_param_key = 'result' THEN event_param_value END) AS result,
           MAX(CASE WHEN event_param_key = 'interrupt_reason' THEN event_param_value END) AS interrupt_reason,
           MAX(CASE WHEN event_param_key = 'total_ms' THEN CAST(event_param_value AS DOUBLE) END) AS total_ms,
           MAX(CASE WHEN event_param_key = 'first_content_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_content_ms
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'chat_stream_result'
           AND event_param_key IN ('result', 'interrupt_reason', 'total_ms', 'first_content_ms')
           AND event_date >= :date_start
@@ -677,11 +998,25 @@ datasets:
   msg_failure_breakdown:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH s AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('chat_stream_result')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('chat_stream_result')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      s AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'result' THEN event_param_value END) AS result,
           MAX(CASE WHEN event_param_key = 'interrupt_reason' THEN event_param_value END) AS interrupt_reason
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'chat_stream_result'
           AND event_param_key IN ('result', 'interrupt_reason')
           AND event_date >= :date_start
@@ -700,12 +1035,26 @@ datasets:
   msg_error_code:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH s AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('chat_stream_result')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('chat_stream_result')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      s AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'result' THEN event_param_value END) AS result,
           MAX(CASE WHEN event_param_key = 'error_code' THEN event_param_value END) AS error_code,
           MAX(CASE WHEN event_param_key = 'interrupt_reason' THEN event_param_value END) AS interrupt_reason
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'chat_stream_result'
           AND event_param_key IN ('result', 'error_code', 'interrupt_reason')
           AND event_date >= :date_start
@@ -728,13 +1077,27 @@ datasets:
   msg_by_model:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH r AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('chat_stream_first_render')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('chat_stream_first_render')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      r AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'chat_service' THEN event_param_value END) AS model,
           MAX(CASE WHEN event_param_key = 'first_content_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_content_ms,
           MAX(CASE WHEN event_param_key = 'first_chunk_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_chunk_ms,
           MAX(CASE WHEN event_param_key = 'is_streaming' THEN event_param_value END) AS is_streaming
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'chat_stream_first_render'
           AND event_param_key IN ('chat_service', 'first_content_ms', 'first_chunk_ms', 'is_streaming')
           AND event_date >= :date_start
@@ -758,13 +1121,27 @@ datasets:
   msg_by_network:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH r AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('chat_stream_first_render')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('chat_stream_first_render')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      r AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'first_chunk_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_chunk_ms,
           MAX(CASE WHEN event_param_key = 'first_content_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_content_ms,
           MAX(CASE WHEN event_param_key = 'network_type' THEN event_param_value END) AS network_type,
           MAX(CASE WHEN event_param_key = 'is_streaming' THEN event_param_value END) AS is_streaming
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'chat_stream_first_render'
           AND event_param_key IN ('first_chunk_ms', 'first_content_ms', 'network_type', 'is_streaming')
           AND event_date >= :date_start
@@ -787,14 +1164,28 @@ datasets:
   msg_error_breakdown:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH e AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('chat_error')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('chat_error')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      e AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'type' THEN event_param_value END) AS err_type,
           MAX(CASE WHEN event_param_key = 'failure_kind' THEN event_param_value END) AS failure_kind,
           MAX(CASE WHEN event_param_key = 'errorCode' THEN event_param_value END) AS error_code,
           MAX(CASE WHEN event_param_key = 'statusCode' THEN event_param_value END) AS status_code,
           MAX(CASE WHEN event_param_key = 'wsConnected' THEN event_param_value END) AS ws_connected
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'chat_error'
           AND event_param_key IN ('type', 'failure_kind', 'errorCode', 'statusCode', 'wsConnected')
           AND event_date >= :date_start
@@ -820,11 +1211,25 @@ datasets:
   msg_timeout:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH t AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('measurement_chat_message_timeout')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('measurement_chat_message_timeout')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      t AS (
         SELECT event_date, event_id,
           MAX(CASE WHEN event_param_key = 'socket_connected' THEN event_param_value END) AS socket_connected,
           MAX(CASE WHEN event_param_key = 'socket_type' THEN event_param_value END) AS socket_type
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'measurement_chat_message_timeout'
           AND event_param_key IN ('socket_connected', 'socket_type')
           AND event_date >= :date_start
@@ -882,11 +1287,20 @@ datasets:
   device_summary:
     params: [date_start, date_end, use_date_end]
     sql: |
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_launch_cold')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_launch_cold')
+      )
       SELECT
         COUNT(DISTINCT user_pseudo_id) AS total_users,
         COUNT(DISTINCT get_json_string(device, '$.mobile_model_name')) AS distinct_models,
         COUNT(DISTINCT get_json_string(device, '$.mobile_brand_name')) AS distinct_brands
-      FROM ods_original.ods_clickstream_app_event_di
+      FROM apm_events
       WHERE event_name = 'app_launch_cold'
         AND platform = 'Android'
         AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -895,10 +1309,19 @@ datasets:
   device_brand_share:
     params: [date_start, date_end, use_date_end]
     sql: |
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_launch_cold')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_launch_cold')
+      )
       SELECT
         get_json_string(device, '$.mobile_brand_name') AS brand,
         COUNT(DISTINCT user_pseudo_id) AS users
-      FROM ods_original.ods_clickstream_app_event_di
+      FROM apm_events
       WHERE event_name = 'app_launch_cold'
         AND platform = 'Android'
         AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -912,11 +1335,20 @@ datasets:
   device_model_share:
     params: [date_start, date_end, use_date_end]
     sql: |
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_launch_cold')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_launch_cold')
+      )
       SELECT
         get_json_string(device, '$.mobile_brand_name') AS brand,
         get_json_string(device, '$.mobile_model_name') AS model,
         COUNT(DISTINCT user_pseudo_id) AS users
-      FROM ods_original.ods_clickstream_app_event_di
+      FROM apm_events
       WHERE event_name = 'app_launch_cold'
         AND platform = 'Android'
         AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -930,10 +1362,19 @@ datasets:
   device_os_share:
     params: [date_start, date_end, use_date_end]
     sql: |
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_launch_cold')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_launch_cold')
+      )
       SELECT
         get_json_string(device, '$.operating_system_version') AS os_version,
         COUNT(DISTINCT user_pseudo_id) AS users
-      FROM ods_original.ods_clickstream_app_event_di
+      FROM apm_events
       WHERE event_name = 'app_launch_cold'
         AND platform = 'Android'
         AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -948,11 +1389,20 @@ datasets:
   perf_availability:
     params: [date_start, date_end, use_date_end]
     sql: |
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_performance')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_performance')
+      )
       SELECT
         COUNT(*) AS android_samples,
         MIN(event_date) AS first_date,
         MAX(event_date) AS last_date
-      FROM ods_original.ods_clickstream_app_event_di
+      FROM apm_events
       WHERE event_name = 'app_performance'
         AND platform = 'Android'
         AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -961,9 +1411,32 @@ datasets:
   perf_percentiles:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH ids AS (
-        SELECT event_id
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
         FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_performance')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_performance')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_performance')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_performance')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      ids AS (
+        SELECT event_id
+        FROM apm_events
         WHERE event_name = 'app_performance'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -977,7 +1450,7 @@ datasets:
           MAX(CASE WHEN pa.event_param_key = 'memory_mb' THEN CAST(pa.event_param_value AS DOUBLE) END) AS memory_mb,
           MAX(CASE WHEN pa.event_param_key = 'java_heap_used_mb' THEN CAST(pa.event_param_value AS DOUBLE) END) AS java_heap_mb,
           MAX(CASE WHEN pa.event_param_key = 'native_heap_used_mb' THEN CAST(pa.event_param_value AS DOUBLE) END) AS native_heap_mb
-        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        FROM apm_params pa
         JOIN ids ON ids.event_id = pa.event_id
         WHERE pa.event_name = 'app_performance'
           AND pa.event_param_key IN ('fps', 'memory_mb', 'java_heap_used_mb', 'native_heap_used_mb')
@@ -1005,9 +1478,18 @@ datasets:
   ws_overview:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH e AS (
-        SELECT event_name, user_pseudo_id
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
         FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('ws_connect_attempt', 'ws_connect_error', 'ws_connect_stalled', 'ws_connect_success', 'ws_disconnect')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('ws_connect_attempt', 'ws_connect_error', 'ws_connect_stalled', 'ws_connect_success', 'ws_disconnect')
+      ),
+      e AS (
+        SELECT event_name, user_pseudo_id
+        FROM apm_events
         WHERE event_name IN ('ws_connect_attempt', 'ws_connect_success', 'ws_connect_error', 'ws_connect_stalled', 'ws_disconnect')
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -1030,6 +1512,15 @@ datasets:
   ws_daily:
     params: [date_start, date_end, use_date_end]
     sql: |
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('ws_connect_attempt', 'ws_connect_error', 'ws_connect_stalled', 'ws_connect_success')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('ws_connect_attempt', 'ws_connect_error', 'ws_connect_stalled', 'ws_connect_success')
+      )
       SELECT
         event_date,
         SUM(CASE WHEN event_name = 'ws_connect_attempt' THEN 1 ELSE 0 END) AS attempts,
@@ -1040,7 +1531,7 @@ datasets:
               / NULLIF(SUM(CASE WHEN event_name = 'ws_connect_attempt' THEN 1 ELSE 0 END), 0), 6) AS connect_success_rate,
         ROUND(SUM(CASE WHEN event_name = 'ws_connect_error' THEN 1 ELSE 0 END)
               / NULLIF(SUM(CASE WHEN event_name = 'ws_connect_attempt' THEN 1 ELSE 0 END), 0), 6) AS error_rate
-      FROM ods_original.ods_clickstream_app_event_di
+      FROM apm_events
       WHERE event_name IN ('ws_connect_attempt', 'ws_connect_success', 'ws_connect_error', 'ws_connect_stalled')
         AND platform = 'Android'
         AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -1051,9 +1542,32 @@ datasets:
   ws_duration:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH ids AS (
-        SELECT event_id, event_name
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
         FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('ws_connect_stalled', 'ws_connect_success', 'ws_disconnect')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('ws_connect_stalled', 'ws_connect_success', 'ws_disconnect')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('ws_connect_stalled', 'ws_connect_success', 'ws_disconnect')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('ws_connect_stalled', 'ws_connect_success', 'ws_disconnect')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      ids AS (
+        SELECT event_id, event_name
+        FROM apm_events
         WHERE event_name IN ('ws_connect_success', 'ws_disconnect', 'ws_connect_stalled')
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -1067,7 +1581,7 @@ datasets:
           MAX(CASE WHEN pa.event_param_key = 'session_duration_ms' THEN CAST(pa.event_param_value AS DOUBLE) END) AS session_ms,
           MAX(CASE WHEN pa.event_param_key = 'stalled_ms' THEN CAST(pa.event_param_value AS DOUBLE) END) AS stalled_ms,
           MAX(CASE WHEN pa.event_param_key = 'is_reconnect' THEN pa.event_param_value END) AS is_reconnect
-        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        FROM apm_params pa
         JOIN ids ON ids.event_id = pa.event_id
         WHERE pa.event_name IN ('ws_connect_success', 'ws_disconnect', 'ws_connect_stalled')
           AND pa.event_param_key IN ('connect_duration_ms', 'session_duration_ms', 'stalled_ms', 'is_reconnect')
@@ -1090,9 +1604,32 @@ datasets:
   ws_reason:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH ids AS (
-        SELECT event_id, event_name
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
         FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('ws_connect_error', 'ws_disconnect')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('ws_connect_error', 'ws_disconnect')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('ws_connect_error', 'ws_disconnect')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('ws_connect_error', 'ws_disconnect')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      ids AS (
+        SELECT event_id, event_name
+        FROM apm_events
         WHERE event_name IN ('ws_connect_error', 'ws_disconnect')
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -1102,7 +1639,7 @@ datasets:
       p AS (
         SELECT pa.event_id,
           MAX(CASE WHEN pa.event_param_key = 'reason' THEN pa.event_param_value END) AS reason
-        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        FROM apm_params pa
         WHERE pa.event_name IN ('ws_connect_error', 'ws_disconnect')
           AND pa.event_param_key = 'reason'
           AND pa.event_date >= :date_start
@@ -1128,9 +1665,32 @@ datasets:
   pay_step:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH wanted AS (
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('payment_step')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('payment_step')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('payment_step')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('payment_step')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      wanted AS (
         SELECT pa.event_id
-        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        FROM apm_params pa
         WHERE pa.event_name = 'payment_step'
           AND pa.event_param_key = 'step'
           AND pa.event_param_value <> 'catalog_load'
@@ -1140,7 +1700,7 @@ datasets:
       ),
       ids AS (
         SELECT DISTINCT d.event_id
-        FROM ods_original.ods_clickstream_app_event_di d
+        FROM apm_events d
         JOIN wanted w ON w.event_id = d.event_id
         WHERE d.event_name = 'payment_step'
           AND d.platform = 'Android'
@@ -1155,7 +1715,7 @@ datasets:
           MAX(CASE WHEN pa.event_param_key = 'payment_flow_id' THEN pa.event_param_value END) AS flow_id,
           MAX(CASE WHEN pa.event_param_key = 'flow_origin' THEN pa.event_param_value END) AS flow_origin,
           MAX(CASE WHEN pa.event_param_key = 'duration_ms' THEN CAST(pa.event_param_value AS DOUBLE) END) AS duration_ms
-        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        FROM apm_params pa
         JOIN ids ON ids.event_id = pa.event_id
         WHERE pa.event_name = 'payment_step'
           AND pa.event_param_key IN ('step', 'status', 'payment_flow_id', 'flow_origin', 'duration_ms')
@@ -1181,9 +1741,32 @@ datasets:
   pay_funnel:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH ids AS (
-        SELECT event_id
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
         FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('payment_step')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('payment_step')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('payment_step')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('payment_step')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      ids AS (
+        SELECT event_id
+        FROM apm_events
         WHERE event_name = 'payment_step'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -1196,7 +1779,7 @@ datasets:
           MAX(CASE WHEN pa.event_param_key = 'status' THEN pa.event_param_value END) AS status,
           MAX(CASE WHEN pa.event_param_key = 'payment_flow_id' THEN pa.event_param_value END) AS flow_id,
           MAX(CASE WHEN pa.event_param_key = 'flow_origin' THEN pa.event_param_value END) AS flow_origin
-        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        FROM apm_params pa
         JOIN ids ON ids.event_id = pa.event_id
         WHERE pa.event_name = 'payment_step'
           AND pa.event_param_key IN ('step', 'status', 'payment_flow_id', 'flow_origin')
@@ -1233,9 +1816,32 @@ datasets:
   pay_failure:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH ids AS (
-        SELECT event_id
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
         FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('payment_step')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('payment_step')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('payment_step')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('payment_step')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      ids AS (
+        SELECT event_id
+        FROM apm_events
         WHERE event_name = 'payment_step'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -1248,7 +1854,7 @@ datasets:
           MAX(CASE WHEN pa.event_param_key = 'status' THEN pa.event_param_value END) AS status,
           MAX(CASE WHEN pa.event_param_key = 'failure_reason' THEN pa.event_param_value END) AS failure_reason,
           MAX(CASE WHEN pa.event_param_key = 'billing_response_code' THEN pa.event_param_value END) AS billing_response_code
-        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        FROM apm_params pa
         JOIN ids ON ids.event_id = pa.event_id
         WHERE pa.event_name = 'payment_step'
           AND pa.event_param_key IN ('step', 'status', 'failure_reason', 'billing_response_code')
@@ -1270,9 +1876,32 @@ datasets:
   pay_daily:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH ids AS (
-        SELECT event_id, event_date
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
         FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('payment_step')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('payment_step')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('payment_step')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('payment_step')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      ids AS (
+        SELECT event_id, event_date
+        FROM apm_events
         WHERE event_name = 'payment_step'
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -1283,7 +1912,7 @@ datasets:
         SELECT ids.event_date, pa.event_id,
           MAX(CASE WHEN pa.event_param_key = 'step' THEN pa.event_param_value END) AS step,
           MAX(CASE WHEN pa.event_param_key = 'status' THEN pa.event_param_value END) AS status
-        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        FROM apm_params pa
         JOIN ids ON ids.event_id = pa.event_id
         WHERE pa.event_name = 'payment_step'
           AND pa.event_param_key IN ('step', 'status')
@@ -1312,14 +1941,28 @@ datasets:
   msg_vpn_split:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH s AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('chat_stream_result')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('chat_stream_result')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      s AS (
         SELECT event_id,
           MAX(CASE WHEN event_param_key = 'result' THEN event_param_value END) AS result,
           MAX(CASE WHEN event_param_key = 'interrupt_reason' THEN event_param_value END) AS interrupt_reason,
           MAX(CASE WHEN event_param_key = 'total_ms' THEN CAST(event_param_value AS DOUBLE) END) AS total_ms,
           MAX(CASE WHEN event_param_key = 'first_content_ms' THEN CAST(event_param_value AS DOUBLE) END) AS first_content_ms,
           MAX(CASE WHEN event_param_key = 'is_vpn' THEN event_param_value END) AS is_vpn
-        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        FROM apm_params
         WHERE event_name = 'chat_stream_result'
           AND event_param_key IN ('result', 'interrupt_reason', 'total_ms', 'first_content_ms', 'is_vpn')
           AND event_date >= :date_start
@@ -1348,9 +1991,32 @@ datasets:
   ws_vpn_split:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH ids AS (
-        SELECT event_id, event_name
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
         FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('ws_connect_attempt', 'ws_connect_error', 'ws_connect_stalled', 'ws_connect_success')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('ws_connect_attempt', 'ws_connect_error', 'ws_connect_stalled', 'ws_connect_success')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('ws_connect_attempt', 'ws_connect_error', 'ws_connect_stalled', 'ws_connect_success')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('ws_connect_attempt', 'ws_connect_error', 'ws_connect_stalled', 'ws_connect_success')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      ids AS (
+        SELECT event_id, event_name
+        FROM apm_events
         WHERE event_name IN ('ws_connect_attempt', 'ws_connect_success', 'ws_connect_error', 'ws_connect_stalled')
           AND platform = 'Android'
           AND get_json_string(app_info, '$.id') = 'com.flow.mobile'
@@ -1360,7 +2026,7 @@ datasets:
       p AS (
         SELECT pa.event_id,
           MAX(CASE WHEN pa.event_param_key = 'is_vpn' THEN pa.event_param_value END) AS is_vpn
-        FROM ods_original.ods_clickstream_app_event_parameter_hi pa
+        FROM apm_params pa
         WHERE pa.event_name IN ('ws_connect_attempt', 'ws_connect_success', 'ws_connect_error', 'ws_connect_stalled')
           AND pa.event_param_key = 'is_vpn'
           AND pa.event_date >= :date_start
@@ -1393,9 +2059,23 @@ datasets:
   anr_payload:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH anr_ids AS (
+      WITH apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_crash')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_crash')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      anr_ids AS (
         SELECT p.event_date, p.event_id
-        FROM ods_original.ods_clickstream_app_event_parameter_hi p
+        FROM apm_params p
         WHERE p.event_date >= :date_start
           AND (:use_date_end = 0 OR p.event_date <= :date_end)
           AND p.event_name = 'app_crash'
@@ -1405,7 +2085,7 @@ datasets:
       )
       SELECT p.event_date, p.event_id, p.event_timestamp,
         p.event_param_key, p.event_param_value
-      FROM ods_original.ods_clickstream_app_event_parameter_hi p
+      FROM apm_params p
       JOIN anr_ids a ON a.event_date = p.event_date AND a.event_id = p.event_id
       WHERE p.event_date >= :date_start
         AND (:use_date_end = 0 OR p.event_date <= :date_end)
@@ -1415,9 +2095,32 @@ datasets:
   anr_details:
     params: [date_start, date_end, use_date_end]
     sql: |
-      WITH anr_ids AS (
+      WITH apm_events AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_di
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_crash')
+        UNION ALL
+        SELECT event_date, event_name, event_id, event_timestamp, event_bundle_sequence_id, ingest_timestamp, device, geo, app_info, platform, user_pseudo_id, user_id
+        FROM ods_original.ods_clickstream_app_event_v2_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_crash')
+      ),
+      apm_params AS (
+        SELECT event_date, event_name, event_id, event_timestamp, event_param_key, event_param_value, user_id, ingest_timestamp
+        FROM ods_original.ods_clickstream_app_event_parameter_hi
+        WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date < '2026-11-10' AND event_name IN ('app_crash')
+        UNION ALL
+        SELECT e.event_date, e.event_name, e.event_id, e.event_timestamp,
+          kv.`key` AS event_param_key, CAST(kv.value AS VARCHAR) AS event_param_value,
+          e.user_id, e.ingest_timestamp
+        FROM (
+          SELECT event_date, event_name, event_id, event_timestamp, user_id, ingest_timestamp, event_params
+          FROM ods_original.ods_clickstream_app_event_v2_hi
+          WHERE event_date >= :date_start AND (:use_date_end = 0 OR event_date <= :date_end) AND event_date >= '2026-11-10' AND event_name IN ('app_crash')
+        ) e, LATERAL json_each(e.event_params) kv
+      ),
+      anr_ids AS (
         SELECT p.event_date, p.event_id
-        FROM ods_original.ods_clickstream_app_event_parameter_hi p
+        FROM apm_params p
         WHERE p.event_date >= :date_start
           AND (:use_date_end = 0 OR p.event_date <= :date_end)
           AND p.event_name = 'app_crash'
@@ -1429,7 +2132,7 @@ datasets:
         CAST(d.app_info AS STRING) AS app_info_json,
         CAST(d.device AS STRING) AS device_json, d.platform
       FROM anr_ids a
-      LEFT JOIN ods_original.ods_clickstream_app_event_di d
+      LEFT JOIN apm_events d
         ON d.event_date = a.event_date AND d.event_id = a.event_id
         AND d.event_name = 'app_crash' AND d.platform = 'Android'
       WHERE a.event_date >= :date_start

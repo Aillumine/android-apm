@@ -25,6 +25,16 @@ class PrefetchTest(unittest.TestCase):
         self.assertIn("p.event_date <= '2026-11-04'", sql)
         self.assertEqual(names, ["date_end", "date_start", "use_date_end"])
 
+    def test_source_cutover_is_disjoint_and_bounded(self):
+        datasets = datasets_from_manifest((ROOT / "manifest.yaml").read_text())
+        for name, sql in datasets.items():
+            if "ods_original.ods_clickstream_app_event_" not in sql:
+                continue
+            self.assertIn("ods_clickstream_app_event_v2_hi", sql, name)
+            self.assertIn("event_date < '2026-11-10'", sql, name)
+            self.assertIn("event_date >= '2026-11-10'", sql, name)
+            self.assertNotIn("{{", sql, name)
+
     def test_incomplete_result_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "incomplete result"):
             normalize({"columns": ["n"], "rows": [[1]], "row_count": 2}, "x")
@@ -43,6 +53,27 @@ class PrefetchTest(unittest.TestCase):
         data["ws_reason"]["rows"][0]["cnt"] = 2
         with self.assertRaisesRegex(ValueError, "reason total mismatch"):
             validate_ws_totals(data)
+
+    def test_zero_launch_snapshot_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run = Path(temp) / "20261119"
+            results = run / "results"
+            results.mkdir(parents=True)
+            sql = "SELECT 0 AS launches"
+            queries = run / "queries.json"
+            queries.write_text(json.dumps({
+                "date_end": "2026-11-18", "datasets": {"crash_overview": {"sql": sql}},
+            }))
+            (results / "crash_overview.json").write_text(json.dumps({
+                "rows": [{"launches": 0}], "query_sha256": hashlib.sha256(sql.encode()).hexdigest(),
+            }))
+            output = run / "latest.json"
+            result = subprocess.run(["python3", str(ROOT / "scripts/assemble_prefetch.py"),
+                "--queries", str(queries), "--results", str(results), "--output", str(output),
+                "--allow-partial"], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("refusing to publish an empty snapshot", result.stderr)
+            self.assertFalse(output.exists())
 
     def test_partial_snapshot_is_labeled_and_bound_to_run_sql(self):
         with tempfile.TemporaryDirectory() as temp:

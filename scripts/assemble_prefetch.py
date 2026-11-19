@@ -69,6 +69,9 @@ def main():
         if source.get("query_sha256") != expected_hash:
             raise ValueError(f"{name}: result SQL does not match this morning's query")
         datasets[name] = normalize(source, name)
+    overview = datasets.get("crash_overview", {}).get("rows", [])
+    if "crash_overview" in datasets and (not overview or int(overview[0].get("launches") or 0) <= 0):
+        raise ValueError("No app launches in stability source; refusing to publish an empty snapshot")
     if missing and not args.allow_partial:
         raise ValueError(f"Missing dataset results: {', '.join(missing)}")
     if {"ws_overview", "ws_reason", "ws_vpn_split"}.issubset(datasets):

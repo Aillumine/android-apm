@@ -40,6 +40,8 @@ test("partial snapshot cannot claim a section is ready", async () => {
     cold_threshold_ms: 2000, complete: false, missing_datasets: ["crash_daily"],
     datasets: { crash_overview: { rows: [] } } });
   await cache.load();
+  assert.equal(cache.info().dateStart, "2026-11-03");
+  assert.equal(cache.info().dateEnd, "2026-11-04");
   assert.equal(cache.info().complete, false);
   assert.deepEqual(Array.from(cache.info().missing), ["crash_daily"]);
   assert.equal(cache.covers("stability", { date_start: "2026-11-03", date_end: "2026-11-04", use_date_end: 1 }), false);
