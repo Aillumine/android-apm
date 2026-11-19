@@ -73,3 +73,12 @@ test("does not assign another app's generic coroutine thread to our app", () => 
   assert.equal(api.classify("thread", "DefaultDispatch", "com.flow.mobile")[0], "coroutine_worker");
   assert.equal(api.classify("thread", "DefaultDispatch", "com.dti.motorola")[0], "third_party_thread");
 });
+
+
+test("accepts four-part release versions at the supported cutoff", async () => {
+  const api = moduleUnderTest();
+  const current = fixture("2.2.16.2");
+  const older = fixture("2.2.14.9");
+  assert.equal((await api.build(current.payload, current.details)).meta.events, 1);
+  assert.equal((await api.build(older.payload, older.details)).meta.events, 0);
+});

@@ -82,7 +82,7 @@
   }
 
   function isSupportedVersion(value) {
-    const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value || "");
+    const match = /^(\d+)\.(\d+)\.(\d+)(?:\.\d+)*$/.exec(value || "");
     if (!match) return false;
     const [major, minor, patch] = match.slice(1).map(Number);
     return major > 2 || (major === 2 && (minor > 2 || (minor === 2 && patch >= 15)));
