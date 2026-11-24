@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import { runInNewContext } from "node:vm";
 import { join } from "node:path";
+import { summarizeCpu } from "./summarize_anr_cpu.mjs";
 
 const [start, end, output, ...runs] = process.argv.slice(2);
 if (!output || !runs.length || ![start, end].every(day => /^\d{4}-\d{2}-\d{2}$/.test(day))) {
@@ -12,7 +13,7 @@ const readJson = async path => JSON.parse(await readFile(path, "utf8"));
 const window = {};
 window.parent = window;
 runInNewContext(await readFile(new URL("../anr-loader.js", import.meta.url), "utf8"), {
-  window, location: { search: "" }, document: { getElementById: () => ({}) },
+  window, location: { search: "" }, document: { getElementById: () => null },
   URLSearchParams, Blob, DecompressionStream, TextDecoder, Uint8Array, Intl, Date, atob,
 });
 const inputs = new Map();
@@ -104,5 +105,7 @@ for (const { day, daily } of dailyResults) {
   }
 }
 data.meta = { cpuMin: 1, lowCpuFiles, events: Object.keys(data.events).length, samples: data.samples.length, conflicts: conflicts.size };
-const summaryBytes = await writeGzip(`${start}_${end}`, { schema: 1, dateStart: start, dateEnd: end, data });
+const snapshot = { schema: 1, dateStart: start, dateEnd: end, data };
+const summaryBytes = await writeGzip(`${start}_${end}`, snapshot);
+await writeFile(join(output, `${start}_${end}-overview.json`), JSON.stringify(summarizeCpu(snapshot)));
 console.log(JSON.stringify({ ...data.meta, summaryBytes, originalBytes }));

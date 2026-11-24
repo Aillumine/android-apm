@@ -2,7 +2,7 @@ const SLUG = "android-apm";
 
 const SECTION_META = {
   stability: { title: "稳定性", desc: "前台崩溃与 ANR 分离口径、按版本与机型下钻" },
-  anr: { title: "ANR归因", desc: "完整 ANR 日志、CPU 来源分类与 ANR 触发组件" },
+  anr: { title: "ANR归因", desc: "高 CPU 来源与分类查询" },
   frame: { title: "流畅度", desc: "app_frame_performance 卡顿率分布、最卡页面与版本对比（1% 采样）" },
   startup: { title: "冷启动", desc: "process→onCreate、onCreate 方法体、到上报点的总耗时" },
   messages: { title: "收发消息", desc: "回复完成率、首字与总耗时分位、失败原因与网络类型（1% 采样）" },
@@ -27,6 +27,8 @@ const state = {
   dateRangeMode: "quick",
   charts: {},
   bypassSnapshot: false,
+  anrView: "events",
+  anrViewStatus: null,
 };
 
 function $(id) {
@@ -122,6 +124,30 @@ async function exportDatasetResult(name, params) {
   const rows = await parquetReadObjects({ file: await resultResp.arrayBuffer(), compressors });
   return { columns: Object.keys(rows[0] || {}), rows };
 }
+
+// ANR metadata and one-event bodies are bounded SQL datasets. Never export a full range.
+window.queryAnrDatasets = async function(names, params) {
+  const allowed = new Set(["anr_summary", "anr_page", "anr_event_body"]);
+  if (!Array.isArray(names) || !names.length || names.some(name => !allowed.has(name))) {
+    throw new Error("Unsupported bounded ANR dataset");
+  }
+  const { bypass_prefetch: bypassPrefetch, ...queryParams } = params;
+  const normalized = { ...queryParams, use_date_end: 1 };
+  if (!state.bypassSnapshot && !bypassPrefetch && names.length === 1) {
+    const cache = window.ApmPrefetch;
+    const summary = cache?.lookup(["anr_summary"], normalized);
+    if (names[0] === "anr_summary" && summary) return summary;
+    const firstPage = Number(normalized.cursor_event_timestamp) === 0 && !normalized.cursor_event_id;
+    const kind = normalized.record_kind;
+    if (names[0] === "anr_page" && firstPage && ["all", "canonical", "candidate"].includes(kind)
+        && summary?.anr_summary.rows[0]?.snapshot_etl === normalized.snapshot_etl) {
+      const key = `anr_page_${kind}`;
+      const page = cache?.lookup([key], normalized)?.[key];
+      if (page) return { anr_page: page };
+    }
+  }
+  return queryDatasetsDirect(names, normalized);
+};
 
 let exportQueue = Promise.resolve();
 
@@ -1234,7 +1260,14 @@ function loadAnr(isCurrent) {
     date_end: params.date_end || params.date_start,
     request_id: requestId,
     live: state.bypassSnapshot ? "1" : "0",
+    view: state.anrView,
   });
+  const cpuRange = window.ApmPrefetch?.info()?.cpuRange;
+  if (cpuRange?.date_start && cpuRange?.date_end) {
+    query.set("cpu_date_start", cpuRange.date_start);
+    query.set("cpu_date_end", cpuRange.date_end);
+  }
+  frame.dataset.anrRequestId = requestId;
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => finish(new Error("ANR 数据加载超时")), 5 * 60 * 1000);
     function finish(error) {
@@ -1255,6 +1288,7 @@ function loadAnr(isCurrent) {
     function onMessage(event) {
       if (event.source !== frame.contentWindow || event.origin !== location.origin) return;
       if (event.data?.source !== "android-apm-anr" || event.data.requestId !== requestId) return;
+      if (event.data.view) applyAnrViewStatus(event.data);
       finish(event.data.error ? new Error(event.data.error) : null);
     }
     window.addEventListener("message", onMessage);
@@ -1262,6 +1296,37 @@ function loadAnr(isCurrent) {
     previous.after(frame);
   });
 }
+
+function applyAnrViewStatus(metadata) {
+  if (!["cpu", "events"].includes(metadata?.view)) return;
+  state.anrView = metadata.view;
+  state.anrViewStatus = metadata;
+  if (currentSection !== "anr") return;
+  if (metadata.dateStart && metadata.dateEnd &&
+      ($("startDate").value !== metadata.dateStart || $("endDate").value !== metadata.dateEnd)) {
+    $("startDate").value = metadata.dateStart;
+    $("endDate").value = metadata.dateEnd;
+    invalidateAll();
+    document.querySelectorAll("#quickRange .quick-chip").forEach(chip => chip.classList.remove("active"));
+  }
+  $("pageDesc").textContent = metadata.view === "cpu"
+    ? "高 CPU 来源与分类查询"
+    : "诊断摘要与分页事件；同进程未关联候选单独查看";
+  const phase = metadata.phase || "ready";
+  const fallback = metadata.view === "cpu" ? "CPU 归因预取" : "诊断摘要与分页事件";
+  const stale = phase === "ready" && metadata.dateEnd < beijingDate(-1);
+  const message = metadata.message || fallback;
+  setDataStatus(phase === "loading" ? "loading" : phase === "unavailable" ? "error" : "ok",
+    stale ? `最新预取尚未发布 · ${message}` : message);
+}
+
+// The same iframe can navigate between CPU and event views after its initial ready signal.
+window.addEventListener("message", event => {
+  const frame = $("anrFrame");
+  if (!frame || event.source !== frame.contentWindow || event.origin !== location.origin) return;
+  if (event.data?.source !== "android-apm-anr" || event.data.requestId !== frame.dataset.anrRequestId) return;
+  applyAnrViewStatus(event.data);
+});
 
 const LOADERS = {
   stability: loadStability,
@@ -1277,7 +1342,7 @@ const LOADERS = {
   tracking: loadTracking,
 };
 
-let currentSection = "stability";
+let currentSection = "anr";
 const sectionRequests = new Map();
 
 async function runSection(name, { force = false, silent = false } = {}) {
@@ -1311,13 +1376,13 @@ async function runSection(name, { force = false, silent = false } = {}) {
     if (!silent && currentSection === name) setStatus("");
     clearSectionSkeleton(name);
     if (!silent && currentSection === name) {
-      const snapshot = window.ApmPrefetch?.info();
-      const partial = snapshot?.complete === false;
-      const cacheLabel = snapshot?.dateEnd < beijingDate(-1)
-        ? `预取尚未更新 · 当前显示 ${snapshot.dateStart} 至 ${snapshot.dateEnd}`
-        : (partial ? "今日部分预加载 · 其余板块实时查询" : "每日预加载数据 · Android");
-      setDataStatus("ok", cached ? cacheLabel
-        : `ods_clickstream_app · Android · ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+      const partial = window.ApmPrefetch?.info()?.complete === false;
+      if (name === "anr") {
+        applyAnrViewStatus(state.anrViewStatus || { view: state.anrView, phase: "loading", message: "正在读取 ANR 视图…" });
+      } else {
+        setDataStatus("ok", cached ? (partial ? "今日部分预加载 · 其余板块实时查询" : "每日预加载数据 · Android")
+          : `ods_clickstream_app · Android · ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+      }
     }
   } catch (error) {
     if (!isCurrent()) return;
@@ -1335,7 +1400,10 @@ function switchSection(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === `sec-${name}`));
   $("pageTitle").textContent = SECTION_META[name].title;
   $("pageDesc").textContent = SECTION_META[name].desc;
-  return runSection(name).then(resizeAll);
+  return runSection(name).then(() => {
+    resizeAll();
+    if (name === "anr" && state.anrViewStatus) applyAnrViewStatus(state.anrViewStatus);
+  });
 }
 
 function beijingDate(daysFromToday) {
@@ -1452,20 +1520,16 @@ window.addEventListener("resize", resizeAll);
 async function bootstrap() {
   setQuickRange(7);
   await window.ApmPrefetch?.load();
-  const snapshot = window.ApmPrefetch?.info();
-  const snapshotParams = snapshot && {
-    date_start: snapshot.dateStart, date_end: snapshot.dateEnd, use_date_end: 1,
-  };
-  if (snapshot && /^\d{4}-\d{2}-\d{2}$/.test(snapshot.dateStart) &&
-      /^\d{4}-\d{2}-\d{2}$/.test(snapshot.dateEnd) &&
-      Date.parse(snapshot.dateEnd) - Date.parse(snapshot.dateStart) === 6 * 86400000 &&
-      snapshot.dateEnd < beijingDate(-1) &&
-      window.ApmPrefetch.lookup(["crash_overview", "crash_daily", "crash_breakdown"], snapshotParams)) {
-    $("startDate").value = snapshot.dateStart;
-    $("endDate").value = snapshot.dateEnd;
+  const cached = window.ApmPrefetch?.info();
+  if (cached && currentSection === "anr" &&
+      window.ApmPrefetch.lookup(["anr_summary"], { date_start: cached.dateStart, date_end: cached.dateEnd, use_date_end: 1 }) &&
+      cached.dateEnd < $("endDate").value &&
+      Date.parse(cached.dateEnd) - Date.parse(cached.dateStart) === 6 * 86400000) {
+    $("startDate").value = cached.dateStart;
+    $("endDate").value = cached.dateEnd;
     document.querySelectorAll("#quickRange .quick-chip").forEach(chip => chip.classList.remove("active"));
   }
-  await switchSection("stability");
+  await switchSection(currentSection);
   if (!state.bypassSnapshot) {
     for (const name of Object.keys(LOADERS)) {
       const params = {

@@ -5,11 +5,10 @@ import { runInNewContext } from "node:vm";
 import test from "node:test";
 
 function moduleUnderTest() {
-  const status = { textContent: "", hidden: false };
   const window = {};
   window.parent = window;
   const context = {
-    window, document: { getElementById: () => status },
+    window, document: { getElementById: () => null },
     location: { search: "" },
     Blob, DecompressionStream, TextDecoder, Uint8Array, Date, Intl, URLSearchParams, atob,
   };

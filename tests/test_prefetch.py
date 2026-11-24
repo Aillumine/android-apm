@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class PrefetchTest(unittest.TestCase):
     def test_inventory_and_parameter_rendering(self):
         datasets = datasets_from_manifest((ROOT / "manifest.yaml").read_text())
-        self.assertEqual(len(datasets), 44)
+        self.assertEqual(len(datasets), 47)
         self.assertIn("anr_payload", datasets)
         sql, names = render(datasets["anr_payload"], {
             "date_start": "2026-11-03", "date_end": "2026-11-04",
@@ -31,8 +31,9 @@ class PrefetchTest(unittest.TestCase):
             if "ods_original.ods_clickstream_app_event_" not in sql:
                 continue
             self.assertIn("ods_clickstream_app_event_v2_hi", sql, name)
-            self.assertIn("event_date < '2026-11-10'", sql, name)
-            self.assertIn("event_date >= '2026-11-10'", sql, name)
+            self.assertRegex(sql, r"event_date >= (?:DATE )?'2026-11-10'", name)
+            if "ods_clickstream_app_event_di" in sql or "ods_clickstream_app_event_parameter_hi" in sql:
+                self.assertRegex(sql, r"event_date (?:< (?:DATE )?'2026-11-10'|<= (?:DATE )?'2026-11-09')", name)
             self.assertNotIn("{{", sql, name)
 
     def test_incomplete_result_is_rejected(self):

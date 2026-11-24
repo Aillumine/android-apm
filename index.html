@@ -20,10 +20,10 @@
         </div>
       </div>
       <nav class="nav">
-        <button class="nav-item active" data-section="stability">
+        <button class="nav-item" data-section="stability">
           <span class="nav-ico">🛡️</span> 稳定性
         </button>
-        <button class="nav-item" data-section="anr">
+        <button class="nav-item active" data-section="anr">
           <span class="nav-ico">🔎</span> ANR归因
         </button>
         <button class="nav-item" data-section="frame">
@@ -63,8 +63,8 @@
     <div class="main">
       <header class="toolbar">
         <div class="toolbar-left">
-          <h1 id="pageTitle">稳定性</h1>
-          <p id="pageDesc">前台崩溃与 ANR 分离口径、按版本与机型下钻</p>
+          <h1 id="pageTitle">ANR归因</h1>
+          <p id="pageDesc">诊断摘要与分页事件，按需查看高 CPU 来源</p>
         </div>
         <div class="toolbar-right">
           <div class="quick-range" id="quickRange">
@@ -85,7 +85,7 @@
       <div id="globalStatus" class="status-bar hidden"></div>
 
       <!-- 稳定性 -->
-      <section id="sec-stability" class="view active">
+      <section id="sec-stability" class="view">
         <div class="hero-grid">
           <article class="hero-card hero-fps">
             <span class="hero-label">Crash-free 用户率</span>
@@ -199,7 +199,7 @@
       </section>
 
       <!-- ANR 归因 -->
-      <section id="sec-anr" class="view">
+      <section id="sec-anr" class="view active">
         <iframe id="anrFrame" class="anr-frame" title="ANR归因看板" hidden></iframe>
       </section>
 

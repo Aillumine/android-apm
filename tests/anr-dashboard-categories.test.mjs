@@ -1,17 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { runInNewContext } from "node:vm";
 import test from "node:test";
-
-function helpers() {
-  const source = readFileSync(new URL("../anr-dashboard.js", import.meta.url), "utf8");
-  const context = {};
-  runInNewContext(source.slice(0, source.indexOf("const $ =")), context);
-  return context;
-}
+import categories from "../anr-categories.js";
+import { summarizeCpu } from "../scripts/summarize_anr_cpu.mjs";
 
 test("app-owned media and GC threads keep an app primary class and a use label", () => {
-  const { categoriesFor, summarizeCategories } = helpers();
+  const { categoriesFor, summarizeCategories } = categories;
   const rows = [
     { eventId: "a", scope: "app", tag: "media_loader", name: "Loader:Extracto" },
     { eventId: "b", scope: "other", tag: "media_system", name: "mediaserver" },
@@ -34,4 +27,14 @@ test("app-owned media and GC threads keep an app primary class and a use label",
   assert.equal(byCategory.get("app").ids.size, 1);
   assert.equal(byCategory.get("media").samples, 2);
   assert.equal([...byCategory.values()].reduce((sum, item) => sum + item.samples, 0), 6);
+});
+
+test("CPU overview preserves event deduplication and uses the strict default threshold", () => {
+  const sample = { scope: "app", tag: "media_loader", name: "ExoPlayer", eventId: "a" };
+  const overview = summarizeCpu({ schema: 1, dateStart: "2026-11-16", dateEnd: "2026-11-22",
+    data: { meta: { events: 2 }, events: { a: {}, b: {} },
+      samples: [{ ...sample, cpu: 60 }, { ...sample, cpu: 51 }, { ...sample, eventId: "b", cpu: 50 }] } });
+  assert.equal(overview.sampleCount, 2);
+  assert.equal(overview.eventsAboveThreshold, 1);
+  assert.deepEqual(overview.categories, [["app", 2]]);
 });

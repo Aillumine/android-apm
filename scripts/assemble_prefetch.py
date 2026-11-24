@@ -51,6 +51,8 @@ def main():
     parser.add_argument("--queries", type=Path, required=True)
     parser.add_argument("--results", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--cpu-range", nargs=2, type=date.fromisoformat, metavar=("START", "END"),
+                        help="Actual date range of the last confirmed CPU snapshot")
     parser.add_argument("--allow-partial", action="store_true", help="Publish only verified datasets and label the snapshot incomplete")
     args = parser.parse_args()
     query = json.loads(args.queries.read_text(encoding="utf-8"))
@@ -80,6 +82,11 @@ def main():
                 "date_start": query["date_start"], "date_end": query["date_end"],
                 "jank_threshold": query["jank_threshold"], "cold_threshold_ms": query["cold_threshold_ms"],
                 "complete": not missing, "missing_datasets": missing, "datasets": datasets}
+    if args.cpu_range:
+        cpu_start, cpu_end = args.cpu_range
+        if cpu_start > cpu_end or cpu_end > date.fromisoformat(query["date_end"]):
+            raise ValueError("Invalid published CPU snapshot range")
+        snapshot["cpu_range"] = {"date_start": cpu_start.isoformat(), "date_end": cpu_end.isoformat()}
     body = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
     if len(body.encode("utf-8")) > 45 * 1024 * 1024:
         raise ValueError("Snapshot exceeds 45 MiB; no partial data was published")

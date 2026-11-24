@@ -8,7 +8,7 @@ function cacheWith(snapshot) {
   const window = {};
   const fetch = async () => ({ ok: true, body: new Blob([gzipSync(JSON.stringify(snapshot))]).stream() });
   runInNewContext(readFileSync(new URL("../prefetch-cache.js", import.meta.url), "utf8"),
-    { window, fetch, Blob, DecompressionStream, Response });
+    { window, fetch, Blob, DecompressionStream, Response, AbortSignal });
   return window.ApmPrefetch;
 }
 

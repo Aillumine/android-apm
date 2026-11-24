@@ -1,4 +1,4 @@
-/* Build the ANR attribution view from the two DataSage datasets. */
+/* CPU attribution is the default; event metadata is a separate secondary view. */
 (() => {
   "use strict";
 
@@ -9,9 +9,9 @@
   const dateEnd = params.get("date_end");
   const status = document.getElementById("anrLoadStatus");
 
-  function tellParent(error) {
+  function tellParent(error, metadata = {}) {
     if (window.parent !== window) {
-      window.parent.postMessage({ source: "android-apm-anr", requestId, error: error || "" }, location.origin);
+      window.parent.postMessage({ source: "android-apm-anr", requestId, error: error || "", ...metadata }, location.origin);
     }
   }
 
@@ -26,7 +26,7 @@
     return String(value);
   }
 
-  async function decode(chunks) {
+  async function decode(chunks, { requireLongmsg = true } = {}) {
     const indexes = [...chunks.keys()].sort((a, b) => a - b);
     if (!indexes.length || indexes.length > 100 || indexes.some((index, position) => index !== position)) {
       throw new Error("ANR 正文分片缺失或不连续");
@@ -59,9 +59,44 @@
     let offset = 0;
     for (const part of parts) { raw.set(part, offset); offset += part.length; }
     const body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
-    if (!body || typeof body.longmsg !== "string" || !body.longmsg.trim()) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("ANR 正文必须是对象");
+    if (requireLongmsg && (typeof body.longmsg !== "string" || !body.longmsg.trim())) {
       throw new Error("ANR 事件缺少完整日志");
     }
+    return body;
+  }
+
+  function validEventHour(value) {
+    return value != null && String(value).trim() !== "" && Number.isInteger(Number(value))
+      && Number(value) >= 0 && Number(value) < 24;
+  }
+  async function decodeEvent(rows, expected) {
+    if (rows.length !== 1) throw new Error(`精确事件查询应为 1 行，实际 ${rows.length} 行`);
+    const row = rows[0];
+    if (String(row.event_id) !== String(expected.event_id) || String(row.event_date).slice(0, 10) !== String(expected.event_date).slice(0, 10) || String(row.event_timestamp) !== String(expected.event_timestamp)) throw new Error("正文与所选事件标识不一致");
+    if (!validEventHour(row.event_hour) || !validEventHour(expected.event_hour) || Number(row.event_hour) !== Number(expected.event_hour)) throw new Error("正文与列表的小时分区不一致");
+    if (!row.record_fingerprint || row.record_fingerprint !== expected.record_fingerprint) throw new Error("正文记录指纹与列表不一致，请刷新摘要");
+    if (row.anr_status !== expected.anr_status || row.record_kind !== expected.record_kind) throw new Error("正文与列表状态不一致，请刷新摘要");
+    const rawParams = typeof row.event_params_json === "string" ? row.event_params_json : JSON.stringify(row.event_params_json);
+    if (typeof rawParams !== "string" || new TextEncoder().encode(rawParams).byteLength > (256 * 1024)) throw new Error("单事件参数超出读取上限");
+    const values = JSON.parse(rawParams);
+    if (!values || typeof values !== "object" || Array.isArray(values)) throw new Error("事件参数不是对象");
+    const chunks = new Map();
+    for (const [key, value] of Object.entries(values)) {
+      const match = /^anr_data_v1_(\d{3})$/.exec(key);
+      if (!match) continue;
+      if (typeof value !== "string" || value.length === 0) throw new Error("正文分片不是非空字符串");
+      chunks.set(Number(match[1]), value);
+    }
+    if (chunks.size !== Number(expected.chunk_count)) throw new Error("正文分片数与列表不一致");
+    const body = await decode(chunks, { requireLongmsg: false });
+    for (const key of ["longmsg", "unmatched_longmsg", "main_stack", "association", "unmatched_reason"]) if (body[key] != null && typeof body[key] !== "string") throw new Error(`${key} 字段类型无效`);
+    const hasLog = typeof body.longmsg === "string" && Boolean(body.longmsg.trim());
+    const hasCandidate = typeof body.unmatched_longmsg === "string" && Boolean(body.unmatched_longmsg.trim());
+    if (row.record_kind === "candidate" && (!hasCandidate || body.longmsg != null || body.association !== "same_process_unmatched")) throw new Error("候选日志与关联标记不一致");
+    if (row.record_kind === "canonical" && (!hasLog || hasCandidate || body.association !== "process_time_correlated")) throw new Error("规则关联日志与正文状态不一致");
+    if (row.anr_status === "captured" && !(typeof body.main_stack === "string" && body.main_stack.trim())) throw new Error("captured 事件缺少主线程栈");
+    if (row.anr_status === "missing_main_stack" && body.main_stack?.trim()) throw new Error("主线程栈状态与正文不一致");
     return body;
   }
 
@@ -249,76 +284,137 @@
     return { meta: { cpuMin: 1, events: Object.keys(events).length, samples: samples.length }, events, samples, anrEvents };
   }
 
+  const archivedCpuRanges = new Set([
+    "2026-11-06_2026-11-12", "2026-11-07_2026-11-13", "2026-11-09_2026-11-15",
+    "2026-11-10_2026-11-16", "2026-11-12_2026-11-18",
+  ]);
+
   async function readSnapshot(path) {
-    const response = await fetch(path, { credentials: "include" });
-    if (!response.ok) throw new Error(`缓存读取失败 (${response.status})`);
+    if (!/^prefetch\/anr\/[a-zA-Z0-9_.-]+\.json\.gz$/.test(path)) throw new Error("无效的 CPU 快照路径");
+    const range = `${dateStart}_${dateEnd}`;
+    const archiveVersion = archivedCpuRanges.has(range) ? 33 : (range === "2026-11-16_2026-11-22" ? 37 : null);
+    const target = archiveVersion
+      ? `/api/v1/artifacts/content/u276/android-apm/${path}?version=${archiveVersion}` : path;
+    const response = await fetch(target, { credentials: "include", cache: archiveVersion ? "default" : "no-store", signal: AbortSignal.timeout(90000) });
+    if (!response.ok) throw new Error(`CPU 预取读取失败 (${response.status})`);
     return new Response(response.body.pipeThrough(new DecompressionStream("gzip"))).json();
   }
 
-  async function start() {
-    try {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStart || "") || !/^\d{4}-\d{2}-\d{2}$/.test(dateEnd || "")) {
-        throw new Error("日期参数无效，请从主看板进入");
-      }
-      if (window.parent === window || typeof window.parent.queryDatasets !== "function") {
-        throw new Error("请从 Android APM 主看板打开 ANR 归因页");
-      }
-      let data;
-      if (params.get("live") !== "1") {
-        try {
-          const cached = await readSnapshot(`prefetch/anr/${dateStart}_${dateEnd}.json.gz`);
-          if (cached.schema !== 1 || cached.dateStart !== dateStart || cached.dateEnd !== dateEnd) {
-            throw new Error("归因缓存日期不匹配");
-          }
-          data = cached.data;
-          const shards = new Map();
-          window.readLowCpuSamples = async () => {
-            const days = await Promise.all((data.meta.lowCpuFiles || []).map(file =>
-              readSnapshot(`prefetch/anr/${file}.json.gz`)));
-            return days.flatMap(rows => rows.map(([eventId, kind, scope, parent, name, cpu, block, blockHeader, relation, raw, tag, tagName]) => {
-              const event = data.events[eventId];
-              return { eventId, kind, scope, parent, name, cpu, block, blockHeader, relation, raw, tag, tagName,
-                eventTime: new Date(event.eventMs).toISOString(), version: event.version };
-            }));
-          };
-          window.readAnrLongMsg = async id => {
-            const path = data.events[id].shard;
-            if (!shards.has(path)) {
-              shards.set(path, readSnapshot(`prefetch/anr/${path}.json.gz`).catch(error => {
-                shards.delete(path);
-                throw error;
-              }));
-            }
-            const original = (await shards.get(path))[id];
-            if (typeof original !== "string") throw new Error("缓存缺少此事件原文");
-            return original;
-          };
-        } catch (_) {
-          // A custom range may not have a published snapshot.
+  function connectSnapshot(data) {
+    const shards = new Map();
+    window.readLowCpuSamples = async () => {
+      const days = await Promise.all((data.meta.lowCpuFiles || []).map(file => readSnapshot(`prefetch/anr/${file}.json.gz`)));
+      return days.flatMap(rows => rows.map(([eventId, kind, scope, parent, name, cpu, block, blockHeader, relation, raw, tag, tagName]) => {
+        const event = data.events[eventId];
+        if (!event) throw new Error("低 CPU 分片包含未知事件");
+        return { eventId, kind, scope, parent, name, cpu, block, blockHeader, relation, raw, tag, tagName,
+          eventTime: new Date(event.eventMs).toISOString(), version: event.version };
+      }));
+    };
+    if (data.meta.bodySource === "hourly_event_body") {
+      if (!data.meta.snapshot_etl || typeof window.parent.queryAnrDatasets !== "function") throw new Error("CPU 预取缺少按小时读取正文所需的查询水位或接口");
+      if (Object.values(data.events).some(event => event.record_kind !== "canonical")) throw new Error("CPU 归因预取混入未关联候选，拒绝合并统计");
+      let active = null, previous = null;
+      window.readAnrBody = async id => {
+        if (previous?.id === id) return previous.body;
+        if (active) {
+          if (active.id === id) return active.promise;
+          throw new Error("另一条正文仍在读取，请稍后重新展开");
         }
-      }
-      const cached = Boolean(data);
-      if (!data) {
-        const result = await window.parent.queryDatasets(["anr_payload", "anr_details"], {
-          date_start: dateStart, date_end: dateEnd, use_date_end: 1,
-        });
-        data = await build(rowsOf(result.anr_payload), rowsOf(result.anr_details));
-        window.readAnrLongMsg = async id => data.events[id].longmsg;
-      }
+        const event = data.events[id];
+        if (!event || event.event_id !== id || !validEventHour(event.event_hour)) throw new Error("CPU 事件缺少有效的正文定位信息");
+        const promise = (async () => {
+          const result = await window.parent.queryAnrDatasets(["anr_event_body"], {
+            date_start: dateStart, date_end: dateEnd, use_date_end: 1, snapshot_etl: data.meta.snapshot_etl,
+            event_id: id, event_date: event.event_date, event_hour: Number(event.event_hour),
+          });
+          const body = await decodeEvent(rowsOf(result.anr_event_body), event);
+          previous = { id, body };
+          return body;
+        })();
+        active = { id, promise };
+        try { return await promise; } finally { if (active?.promise === promise) active = null; }
+      };
+      window.readAnrLongMsg = async id => (await window.readAnrBody(id)).longmsg;
+      return;
+    }
+    if (data.meta.bodySource != null) throw new Error("不支持的 CPU 正文来源");
+    delete window.readAnrBody;
+    window.readAnrLongMsg = async id => {
+      const path = data.events[id]?.shard;
+      if (!path) throw new Error("历史预取缺少正文分片定位");
+      if (!shards.has(path)) shards.set(path, readSnapshot(`prefetch/anr/${path}.json.gz`).catch(error => { shards.delete(path); throw error; }));
+      const original = (await shards.get(path))[id];
+      if (typeof original !== "string") throw new Error("缓存缺少此事件原文");
+      return original;
+    };
+  }
+
+  async function start() {
+    if (params.get("view") === "events") {
+      const browser = document.createElement("script");
+      browser.src = "anr-browser.js";
+      browser.onerror = () => tellParent("ANR 摘要脚本加载失败");
+      document.body.append(browser);
+      return;
+    }
+    document.getElementById("anrBrowser").hidden = true;
+    document.getElementById("anrLegacy").hidden = false;
+    const eventsLink = document.createElement("a"), query = new URLSearchParams(location.search);
+    query.set("view", "events");
+    eventsLink.href = `anr-dashboard.html?${query}`;
+    eventsLink.textContent = "诊断摘要与分页事件（含未关联候选） →";
+    document.getElementById("anrLegacy").prepend(eventsLink);
+    const overviewHost = document.createElement("div");
+    status.after(overviewHost);
+    window.renderAnrCpuOverview(overviewHost, dateStart, dateEnd).catch(() => {});
+    const controls = document.querySelectorAll("#anrLegacy input, #anrLegacy select");
+    controls.forEach(control => { control.disabled = true; });
+    status.hidden = false;
+    status.textContent = `正在读取 ${dateStart} 至 ${dateEnd} 的 CPU 归因预取…`;
+    tellParent("", { view: "cpu", phase: "loading", dateStart, dateEnd, message: status.textContent });
+    try {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStart || "") || !/^\d{4}-\d{2}-\d{2}$/.test(dateEnd || "") || dateStart > dateEnd) throw new Error("日期参数无效，请从主看板选择日期");
+      const cached = await readSnapshot(`prefetch/anr/${dateStart}_${dateEnd}.json.gz`);
+      if (cached.schema !== 1 || cached.dateStart !== dateStart || cached.dateEnd !== dateEnd) throw new Error("CPU 预取日期不匹配");
+      const data = cached.data;
+      if (!data?.meta || !data.events || !data.anrEvents || !Array.isArray(data.samples) || Number(data.meta.events) !== Object.keys(data.events).length) throw new Error("CPU 预取结构或事件计数无效");
+      connectSnapshot(data);
       window.DATA = data;
-      document.getElementById("anrFoot").textContent = `${cached ? "每日预取 · " : ""}${dateStart} 至 ${dateEnd}，共 ${data.meta.events.toLocaleString()} 起有日志的 ANR 事件。${data.meta.conflicts ? `另有 ${data.meta.conflicts} 起日志冲突，未计入统计。` : ""}缺少版本信息的事件标记为“版本待核验”。`;
-      status.hidden = true;
+      const source = document.getElementById("anrSnapshotSource");
+      const generated = data.meta.generated_at || cached.generated_at;
+      const provenance = archivedCpuRanges.has(`${dateStart}_${dateEnd}`) ? "已发布 v33 历史归档" : "已发布 CPU 归因预取";
+      const detail = `${provenance} · ${dateStart} 至 ${dateEnd} · ${Number(data.meta.events).toLocaleString()} 起有日志事件 · ${data.samples.length.toLocaleString()} 条首屏 CPU 采样${generated ? ` · 生成于 ${generated}` : " · 生成时间未提供"}`;
+      source.textContent = detail; source.hidden = false;
+      const coverage = data.meta.inputEvents == null ? "" : ` 输入 ${Number(data.meta.inputEvents).toLocaleString()} 起；正文校验失败 ${Number(data.meta.invalidEvents || 0).toLocaleString()} 起；版本不在归因范围 ${Number(data.meta.unsupportedVersions || 0).toLocaleString()} 起。`;
+      document.getElementById("anrFoot").textContent = `${detail}。${coverage}${data.meta.conflicts ? `另有 ${data.meta.conflicts} 起日志冲突，未计入统计。` : ""}候选日志不并入此 CPU 归因视图；可在诊断摘要与分页事件中单独查看。`;
       const script = document.createElement("script");
       script.src = "anr-dashboard.js";
-      script.onload = () => tellParent("");
-      script.onerror = () => { status.textContent = "归因图表脚本加载失败"; tellParent(status.textContent); };
+      script.onload = () => {
+        overviewHost.remove();
+        status.hidden = true;
+        controls.forEach(control => { control.disabled = false; });
+        tellParent("", { view: "cpu", phase: "ready", message: detail, dateStart, dateEnd, events: Number(data.meta.events), samples: data.samples.length });
+      };
+      script.onerror = () => {
+        status.hidden = false; status.textContent = "CPU 归因图表脚本加载失败，请重试。";
+        tellParent("", { view: "cpu", phase: "unavailable", dateStart, dateEnd, message: status.textContent });
+      };
       document.body.append(script);
     } catch (error) {
-      status.textContent = `ANR 数据加载失败：${error.message}`;
-      tellParent(error.message);
+      status.hidden = false;
+      const reason = error.name === "TimeoutError" || error.name === "AbortError"
+        ? "CPU 预取读取超时" : error.message;
+      status.textContent = `${reason}。可重试，或返回诊断摘要继续查看。`;
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.textContent = "重试 CPU 归因";
+      retry.onclick = () => location.reload();
+      status.append(" ", retry);
+      tellParent("", { view: "cpu", phase: "unavailable", dateStart, dateEnd, message: status.textContent });
     }
   }
 
-  window.AnrAttribution = { build, anrInfo, cpuSamples, classify, decode };
-  start();
+  window.AnrAttribution = { build, anrInfo, cpuSamples, classify, decode, decodeEvent, validEventHour, connectSnapshot };
+  if (status) start();
 })();

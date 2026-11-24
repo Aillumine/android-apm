@@ -4,7 +4,7 @@
 
   const sections = {
     stability: ["crash_overview", "crash_daily", "crash_breakdown", "crash_by_version", "crash_by_model"],
-    anr: ["anr_payload", "anr_details"],
+    anr: ["anr_summary", "anr_page_all"],
     frame: ["frame_overview", "frame_percentiles", "frame_by_screen", "frame_daily_by_version", "frame_by_version"],
     startup: ["startup_overview", "startup_daily", "startup_by_version", "startup_by_model", "startup_by_os"],
     messages: ["msg_overview", "msg_daily", "msg_failure_breakdown", "msg_error_code", "msg_by_model", "msg_by_network", "msg_error_breakdown", "msg_timeout", "msg_vpn_split"],
@@ -38,12 +38,13 @@
 
   function info() {
     return snapshot && { complete: snapshot.complete !== false,
-      missing: snapshot.missing_datasets || [], dateStart: snapshot.date_start, dateEnd: snapshot.date_end, generatedAt: snapshot.generated_at };
+      missing: snapshot.missing_datasets || [], generatedAt: snapshot.generated_at,
+      dateStart: snapshot.date_start, dateEnd: snapshot.date_end, cpuRange: snapshot.cpu_range };
   }
 
   async function load() {
     try {
-      const response = await fetch("prefetch/latest.json.gz", { credentials: "include", cache: "no-store" });
+      const response = await fetch("prefetch/latest.json.gz", { credentials: "include", cache: "no-store", signal: AbortSignal.timeout(15000) });
       if (!response.ok) return false;
       const stream = response.body.pipeThrough(new DecompressionStream("gzip"));
       const value = await new Response(stream).json();
