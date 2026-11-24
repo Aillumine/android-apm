@@ -1,4 +1,5 @@
-/* CPU attribution is the default; event metadata is a separate secondary view. */
+/* Load CPU attribution on demand and start the diagnostic browser by default. */
+
 (() => {
   "use strict";
 

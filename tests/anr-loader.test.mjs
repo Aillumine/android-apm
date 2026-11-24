@@ -81,3 +81,27 @@ test("accepts four-part release versions at the supported cutoff", async () => {
   assert.equal((await api.build(current.payload, current.details)).meta.events, 1);
   assert.equal((await api.build(older.payload, older.details)).meta.events, 0);
 });
+
+test("CPU timeout keeps the summary link and exposes a retry", async () => {
+  const messages = [];
+  const status = { hidden: true, append(_, button) { this.retry = button; }, after() {} };
+  const legacy = { prepend(link) { this.link = link; } };
+  const elements = { anrLoadStatus: status, anrLegacy: legacy, anrBrowser: {} };
+  const window = {
+    parent: { postMessage: payload => messages.push(payload) },
+    renderAnrCpuOverview: async () => {},
+  };
+  const timeout = new Error("aborted");
+  timeout.name = "TimeoutError";
+  runInNewContext(readFileSync(new URL("../anr-loader.js", import.meta.url), "utf8"), {
+    window, URLSearchParams, AbortSignal,
+    location: { search: "?date_start=2026-11-16&date_end=2026-11-22&view=cpu", origin: "https://example.com" },
+    document: { getElementById: name => elements[name], createElement: () => ({}), querySelectorAll: () => [] },
+    fetch: async (_, { signal }) => { assert.ok(signal); throw timeout; },
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(status.textContent, /CPU 预取读取超时/);
+  assert.equal(status.retry.textContent, "重试 CPU 归因");
+  assert.match(legacy.link.href, /view=events/);
+  assert.equal(messages.at(-1).phase, "unavailable");
+});
