@@ -15,7 +15,7 @@
     const title = document.createElement("h2");
     title.textContent = "高 CPU 来源概览";
     const detail = document.createElement("p");
-    detail.textContent = `${dateStart} 至 ${dateEnd} · CPU > ${overview.threshold}% · ${overview.sampleCount.toLocaleString()} 条采样 · ${overview.eventsAboveThreshold.toLocaleString()} 起 ANR`;
+    detail.textContent = `${dateStart} 至 ${dateEnd} · CPU > ${overview.threshold}% · ${overview.sampleCount.toLocaleString()} 条采样 · ${overview.eventsAboveThreshold.toLocaleString()} / ${overview.events.toLocaleString()} 起 ANR`;
     const list = document.createElement("ul");
     for (const [key, count] of overview.categories) {
       const item = document.createElement("li");
@@ -31,7 +31,8 @@
       item.append(" ", bar);
       list.append(item);
     }
-    section.append(title, detail, list);
+    section.append(title, detail);
+    if (list.childElementCount) section.append(list);
     container.append(section);
     return section;
   }
