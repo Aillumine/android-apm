@@ -1,6 +1,6 @@
 # Emochi Android APM
 
-DataSage dashboard for Android quality metrics. ANR attribution opens with a small diagnostic summary and the first event page. Each event body is queried and decoded on demand. The high CPU overview is generated from the corresponding CPU snapshot at the default threshold of 50%. Follow the date-labeled link for CPU filters and full sample details.
+DataSage dashboard for Android quality metrics. ANR opens directly on the CPU attribution dashboard with a default threshold of 50%. Filter by version, memory, Android version, or process and thread name. Each event body is queried and decoded on demand.
 
 Every App-owned CPU row has `本 App 进程与线程` as its primary category. A specialized purpose such as media loading, GC, rendering, or diagnostics is retained as a second label and can appear in both category filters. Pie slices count only the primary category once per CPU row; category bars allow overlap and their percentages must not be added together. Generic thread names in another process are never treated as App-owned solely because of their name.
 
@@ -8,7 +8,7 @@ Every App-owned CPU row has `本 App 进程与线程` as its primary category. A
 
 The default range is the previous seven completed Beijing calendar dates. At 08:00 Asia/Shanghai, the scheduled task first prepares the five stability datasets and `anr_summary`. Re-run `scripts/prepare_prefetch.py` with the summary's `--snapshot-etl` to render the three first-page queries against that same watermark. Save validated results and their SQL hashes under `prefetch/runs/YYYYMMDD/results/`. Publish the light snapshot first. Publish the CPU snapshot and its overview independently once all referenced shards are verified.
 
-The browser loads `prefetch/latest.json.gz` with a timeout. If the latest seven-day cache is unavailable, the home page can use the most recent confirmed summary with its actual dates. The CPU overview and details identify their covered dates separately. Select a new range to query that range. CPU details show a retry and summary link if the full snapshot cannot be read.
+The browser loads `prefetch/latest.json.gz` with a timeout. The ANR home page selects the most recent published CPU snapshot and shows its actual dates. Selecting a different range loads its CPU snapshot. The attribution view offers a retry if the snapshot cannot be read.
 
 The scheduled executor needs approved DataSage query and publish access. If an unattended run denies a required approval, retain the last confirmed snapshot and record the run as failed. Confirm scheduled recovery from a run that generates and publishes a new date range and serves it on the production page.
 

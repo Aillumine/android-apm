@@ -27,7 +27,6 @@ const state = {
   dateRangeMode: "quick",
   charts: {},
   bypassSnapshot: false,
-  anrView: "events",
   anrViewStatus: null,
 };
 
@@ -1259,14 +1258,7 @@ function loadAnr(isCurrent) {
     date_start: params.date_start,
     date_end: params.date_end || params.date_start,
     request_id: requestId,
-    live: state.bypassSnapshot ? "1" : "0",
-    view: state.anrView,
   });
-  const cpuRange = window.ApmPrefetch?.info()?.cpuRange;
-  if (cpuRange?.date_start && cpuRange?.date_end) {
-    query.set("cpu_date_start", cpuRange.date_start);
-    query.set("cpu_date_end", cpuRange.date_end);
-  }
   frame.dataset.anrRequestId = requestId;
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => finish(new Error("ANR 数据加载超时")), 5 * 60 * 1000);
@@ -1298,29 +1290,18 @@ function loadAnr(isCurrent) {
 }
 
 function applyAnrViewStatus(metadata) {
-  if (!["cpu", "events"].includes(metadata?.view)) return;
-  state.anrView = metadata.view;
+  if (metadata?.view !== "cpu") return;
   state.anrViewStatus = metadata;
   if (currentSection !== "anr") return;
-  if (metadata.dateStart && metadata.dateEnd &&
-      ($("startDate").value !== metadata.dateStart || $("endDate").value !== metadata.dateEnd)) {
-    $("startDate").value = metadata.dateStart;
-    $("endDate").value = metadata.dateEnd;
-    invalidateAll();
-    document.querySelectorAll("#quickRange .quick-chip").forEach(chip => chip.classList.remove("active"));
-  }
-  $("pageDesc").textContent = metadata.view === "cpu"
-    ? "高 CPU 来源与分类查询"
-    : "诊断摘要与分页事件；同进程未关联候选单独查看";
   const phase = metadata.phase || "ready";
-  const fallback = metadata.view === "cpu" ? "CPU 归因预取" : "诊断摘要与分页事件";
+  const fallback = "CPU 归因预取";
   const stale = phase === "ready" && metadata.dateEnd < beijingDate(-1);
   const message = metadata.message || fallback;
   setDataStatus(phase === "loading" ? "loading" : phase === "unavailable" ? "error" : "ok",
     stale ? `最新预取尚未发布 · ${message}` : message);
 }
 
-// The same iframe can navigate between CPU and event views after its initial ready signal.
+// Receive the final snapshot status after the iframe is visible.
 window.addEventListener("message", event => {
   const frame = $("anrFrame");
   if (!frame || event.source !== frame.contentWindow || event.origin !== location.origin) return;
@@ -1378,7 +1359,7 @@ async function runSection(name, { force = false, silent = false } = {}) {
     if (!silent && currentSection === name) {
       const partial = window.ApmPrefetch?.info()?.complete === false;
       if (name === "anr") {
-        applyAnrViewStatus(state.anrViewStatus || { view: state.anrView, phase: "loading", message: "正在读取 ANR 视图…" });
+        applyAnrViewStatus(state.anrViewStatus || { view: "cpu", phase: "loading", message: "正在读取 ANR 归因数据…" });
       } else {
         setDataStatus("ok", cached ? (partial ? "今日部分预加载 · 其余板块实时查询" : "每日预加载数据 · Android")
           : `ods_clickstream_app · Android · ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
@@ -1520,13 +1501,14 @@ window.addEventListener("resize", resizeAll);
 async function bootstrap() {
   setQuickRange(7);
   await window.ApmPrefetch?.load();
-  const cached = window.ApmPrefetch?.info();
-  if (cached && currentSection === "anr" &&
-      window.ApmPrefetch.lookup(["anr_summary"], { date_start: cached.dateStart, date_end: cached.dateEnd, use_date_end: 1 }) &&
-      cached.dateEnd < $("endDate").value &&
-      Date.parse(cached.dateEnd) - Date.parse(cached.dateStart) === 6 * 86400000) {
-    $("startDate").value = cached.dateStart;
-    $("endDate").value = cached.dateEnd;
+  const cpuRange = window.ApmPrefetch?.info()?.cpuRange;
+  if (currentSection === "anr" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(cpuRange?.date_start ?? "") &&
+      /^\d{4}-\d{2}-\d{2}$/.test(cpuRange?.date_end ?? "") &&
+      Date.parse(cpuRange.date_end) - Date.parse(cpuRange.date_start) === 6 * 86400000 &&
+      cpuRange.date_end < $("endDate").value) {
+    $("startDate").value = cpuRange.date_start;
+    $("endDate").value = cpuRange.date_end;
     document.querySelectorAll("#quickRange .quick-chip").forEach(chip => chip.classList.remove("active"));
   }
   await switchSection(currentSection);

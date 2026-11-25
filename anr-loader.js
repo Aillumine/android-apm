@@ -1,4 +1,4 @@
-/* Load CPU attribution on demand and start the diagnostic browser by default. */
+/* Load the selected CPU attribution snapshot and individual event logs. */
 
 (() => {
   "use strict";
@@ -352,23 +352,6 @@
   }
 
   async function start() {
-    if (params.get("view") === "events") {
-      const browser = document.createElement("script");
-      browser.src = "anr-browser.js";
-      browser.onerror = () => tellParent("ANR 摘要脚本加载失败");
-      document.body.append(browser);
-      return;
-    }
-    document.getElementById("anrBrowser").hidden = true;
-    document.getElementById("anrLegacy").hidden = false;
-    const eventsLink = document.createElement("a"), query = new URLSearchParams(location.search);
-    query.set("view", "events");
-    eventsLink.href = `anr-dashboard.html?${query}`;
-    eventsLink.textContent = "诊断摘要与分页事件（含未关联候选） →";
-    document.getElementById("anrLegacy").prepend(eventsLink);
-    const overviewHost = document.createElement("div");
-    status.after(overviewHost);
-    window.renderAnrCpuOverview(overviewHost, dateStart, dateEnd).catch(() => {});
     const controls = document.querySelectorAll("#anrLegacy input, #anrLegacy select");
     controls.forEach(control => { control.disabled = true; });
     status.hidden = false;
@@ -388,11 +371,10 @@
       const detail = `${provenance} · ${dateStart} 至 ${dateEnd} · ${Number(data.meta.events).toLocaleString()} 起有日志事件 · ${data.samples.length.toLocaleString()} 条首屏 CPU 采样${generated ? ` · 生成于 ${generated}` : " · 生成时间未提供"}`;
       source.textContent = detail; source.hidden = false;
       const coverage = data.meta.inputEvents == null ? "" : ` 输入 ${Number(data.meta.inputEvents).toLocaleString()} 起；正文校验失败 ${Number(data.meta.invalidEvents || 0).toLocaleString()} 起；版本不在归因范围 ${Number(data.meta.unsupportedVersions || 0).toLocaleString()} 起。`;
-      document.getElementById("anrFoot").textContent = `${detail}。${coverage}${data.meta.conflicts ? `另有 ${data.meta.conflicts} 起日志冲突，未计入统计。` : ""}候选日志不并入此 CPU 归因视图；可在诊断摘要与分页事件中单独查看。`;
+      document.getElementById("anrFoot").textContent = `${detail}。${coverage}${data.meta.conflicts ? `另有 ${data.meta.conflicts} 起日志冲突，未计入统计。` : ""}此处仅统计已关联的日志。`;
       const script = document.createElement("script");
       script.src = "anr-dashboard.js";
       script.onload = () => {
-        overviewHost.remove();
         status.hidden = true;
         controls.forEach(control => { control.disabled = false; });
         tellParent("", { view: "cpu", phase: "ready", message: detail, dateStart, dateEnd, events: Number(data.meta.events), samples: data.samples.length });
@@ -406,7 +388,7 @@
       status.hidden = false;
       const reason = error.name === "TimeoutError" || error.name === "AbortError"
         ? "CPU 预取读取超时" : error.message;
-      status.textContent = `${reason}。可重试，或返回诊断摘要继续查看。`;
+      status.textContent = `${reason}。可重试，或选择已发布快照的日期。`;
       const retry = document.createElement("button");
       retry.type = "button";
       retry.textContent = "重试 CPU 归因";

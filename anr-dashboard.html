@@ -34,8 +34,7 @@ mark.hot{background:#e3323e;color:#fff;padding:1px 2px;border-radius:3px;font-we
 @media(max-width:750px){.categoryrow{grid-template-columns:minmax(110px,1fr) 70px;gap:7px}.categorytrack{grid-column:1/-1;grid-row:2}}
 .notice[hidden]{display:none}body{max-width:none;padding:20px 18px 50px}
 </style></head><body>
-<main id="anrBrowser"></main>
-<section id="anrLegacy" hidden>
+<section id="anrLegacy">
 <header><h1>ANR归因看板：高 CPU 来源与分类查询</h1><p>将高 CPU 来源合并为 10 类；按占比排序的横向柱状图可筛选原始 CPU 行和完整 ANR 日志。</p></header><div id="anrLoadStatus" class="notice" role="status">正在读取所选日期的 ANR 数据…</div>
 <div id="anrSnapshotSource" class="notice" hidden></div>
 <div class="stats" id="stats"></div>
@@ -68,5 +67,4 @@ mark.hot{background:#e3323e;color:#fff;padding:1px 2px;border-radius:3px;font-we
 <div class="foot" id="anrFoot">CPU 归因使用所选日期已发布的预取；展开事件后按需读取单条正文。</div>
 </section>
 <script src="anr-categories.js"></script>
-<script src="anr-cpu-overview.js"></script>
 <script src="anr-loader.js"></script></body></html>
