@@ -293,7 +293,8 @@
   async function readSnapshot(path) {
     if (!/^prefetch\/anr\/[a-zA-Z0-9_.-]+\.json\.gz$/.test(path)) throw new Error("无效的 CPU 快照路径");
     const range = `${dateStart}_${dateEnd}`;
-    const archiveVersion = archivedCpuRanges.has(range) ? 33 : (range === "2026-11-16_2026-11-22" ? 37 : null);
+    const bodyAsset = /(?:bodies-[a-f0-9]{20}|-bodies-index)\.json\.gz$/.test(path);
+    const archiveVersion = bodyAsset ? null : archivedCpuRanges.has(range) ? 33 : (range === "2026-11-16_2026-11-22" ? 37 : null);
     const target = archiveVersion
       ? `/api/v1/artifacts/content/u276/android-apm/${path}?version=${archiveVersion}` : path;
     const response = await fetch(target, { credentials: "include", cache: archiveVersion ? "default" : "no-store", signal: AbortSignal.timeout(90000) });
@@ -312,43 +313,55 @@
           eventTime: new Date(event.eventMs).toISOString(), version: event.version };
       }));
     };
-    if (data.meta.bodySource === "hourly_event_body") {
-      if (!data.meta.snapshot_etl || typeof window.parent.queryAnrDatasets !== "function") throw new Error("CPU 预取缺少按小时读取正文所需的查询水位或接口");
-      if (Object.values(data.events).some(event => event.record_kind !== "canonical")) throw new Error("CPU 归因预取混入未关联候选，拒绝合并统计");
-      let active = null, previous = null;
-      window.readAnrBody = async id => {
-        if (previous?.id === id) return previous.body;
-        if (active) {
-          if (active.id === id) return active.promise;
-          throw new Error("另一条正文仍在读取，请稍后重新展开");
-        }
-        const event = data.events[id];
-        if (!event || event.event_id !== id || !validEventHour(event.event_hour)) throw new Error("CPU 事件缺少有效的正文定位信息");
-        const promise = (async () => {
-          const result = await window.parent.queryAnrDatasets(["anr_event_body"], {
-            date_start: dateStart, date_end: dateEnd, use_date_end: 1, snapshot_etl: data.meta.snapshot_etl,
-            event_id: id, event_date: event.event_date, event_hour: Number(event.event_hour),
-          });
-          const body = await decodeEvent(rowsOf(result.anr_event_body), event);
-          previous = { id, body };
-          return body;
-        })();
-        active = { id, promise };
-        try { return await promise; } finally { if (active?.promise === promise) active = null; }
+    if (data.meta.bodySource !== "hourly_event_body") {
+      delete window.readAnrBody;
+      window.readAnrLongMsg = async id => {
+        const path = data.events[id]?.shard;
+        if (!path) throw new Error("历史预取缺少正文分片定位");
+        if (!shards.has(path)) shards.set(path, readSnapshot(`prefetch/anr/${path}.json.gz`).catch(error => {
+          shards.delete(path);
+          throw error;
+        }));
+        const original = (await shards.get(path))[id];
+        if (typeof original !== "string") throw new Error("缓存缺少此事件原文");
+        return original;
       };
-      window.readAnrLongMsg = async id => (await window.readAnrBody(id)).longmsg;
       return;
     }
-    if (data.meta.bodySource != null) throw new Error("不支持的 CPU 正文来源");
-    delete window.readAnrBody;
-    window.readAnrLongMsg = async id => {
-      const path = data.events[id]?.shard;
-      if (!path) throw new Error("历史预取缺少正文分片定位");
-      if (!shards.has(path)) shards.set(path, readSnapshot(`prefetch/anr/${path}.json.gz`).catch(error => { shards.delete(path); throw error; }));
-      const original = (await shards.get(path))[id];
-      if (typeof original !== "string") throw new Error("缓存缺少此事件原文");
-      return original;
+    if (!data.meta.snapshot_etl) throw new Error("CPU 预取缺少正文快照水位");
+    const shardIndex = new Map();
+    const cache = new Map();
+    let indexRequest;
+    const range = `${dateStart}_${dateEnd}`;
+    const indexPath = `prefetch/anr/${range}-bodies-index.json.gz`;
+    async function findShard(id) {
+      if (!indexRequest) {
+        indexRequest = readSnapshot(indexPath).then(index => {
+          if (index.schema !== 1 || index.dateStart !== dateStart || index.dateEnd !== dateEnd ||
+              index.snapshotEtl !== data.meta.snapshot_etl || index.count !== Object.keys(index.events || {}).length ||
+              index.count !== Object.keys(data.events).length) throw new Error("ANR 正文索引与归因快照不一致");
+          for (const [eventId, shard] of Object.entries(index.events)) shardIndex.set(eventId, shard);
+        }).catch(error => { indexRequest = null; throw error; });
+      }
+      await indexRequest;
+      const shard = shardIndex.get(id);
+      if (!/^bodies-[a-f0-9]{20}$/.test(shard || "")) throw new Error("ANR 正文索引缺少该事件");
+      return shard;
+    }
+    window.readAnrBody = async id => {
+      if (!data.events[id]) throw new Error("归因快照缺少该事件");
+      const shard = await findShard(id);
+      if (!cache.has(shard)) {
+        cache.set(shard, readSnapshot(`prefetch/anr/${shard}.json.gz`).catch(error => {
+          cache.delete(shard);
+          throw error;
+        }));
+      }
+      const row = (await cache.get(shard))[id];
+      if (!row) throw new Error("正文分片缺少该事件");
+      return decodeEvent([row], data.events[id]);
     };
+    window.readAnrLongMsg = async id => (await window.readAnrBody(id)).longmsg;
   }
 
   async function start() {

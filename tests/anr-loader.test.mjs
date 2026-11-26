@@ -102,3 +102,42 @@ test("CPU timeout shows a retry directly on the attribution board", async () => 
   assert.equal(status.retry.textContent, "重试 CPU 归因");
   assert.equal(messages.at(-1).phase, "unavailable");
 });
+
+test("cached body shards keep fingerprint validation and retry after a missing index", async () => {
+  const window = {};
+  window.parent = window;
+  let fail = true;
+  let indexCalls = 0;
+  const body = { longmsg: "ANR in com.flow.mobile\nCPU usage from 0ms", main_stack: "main", association: "process_time_correlated" };
+  const encoded = gzipSync(JSON.stringify(body)).toString("base64");
+  const event = { event_id: "event-1", event_date: "2026-11-18", event_hour: 19, event_timestamp: 42,
+    record_fingerprint: "correct", anr_status: "captured", record_kind: "canonical", chunk_count: 1 };
+  const row = { ...event, event_params_json: JSON.stringify({ anr_data_v1_000: encoded }) };
+  const values = {
+    "2026-11-16_2026-11-22-bodies-index.json.gz": {
+      schema: 1, dateStart: "2026-11-16", dateEnd: "2026-11-22",
+      snapshotEtl: "2026-11-23 01:52:41", count: 1, events: { "event-1": "bodies-1234567890abcdef1234" },
+    },
+    "bodies-1234567890abcdef1234.json.gz": { "event-1": row },
+  };
+  runInNewContext(readFileSync(new URL("../anr-loader.js", import.meta.url), "utf8"), {
+    window, document: { getElementById: () => null },
+    location: { search: "?date_start=2026-11-16&date_end=2026-11-22" },
+    URLSearchParams, AbortSignal, Blob, Response, DecompressionStream, TextDecoder, TextEncoder,
+    Uint8Array, Date, Intl, atob,
+    fetch: async url => {
+      const name = url.split("/").at(-1).split("?")[0];
+      if (name.includes("index")) { indexCalls++; if (fail) { fail = false; throw new Error("network"); } }
+      return new Response(gzipSync(JSON.stringify(values[name])));
+    },
+  });
+  window.AnrAttribution.connectSnapshot({ meta: { bodySource: "hourly_event_body",
+    snapshot_etl: "2026-11-23 01:52:41" }, events: { "event-1": event } });
+  await assert.rejects(window.readAnrBody("event-1"), /network/);
+  assert.equal((await window.readAnrBody("event-1")).longmsg, body.longmsg);
+  assert.equal(indexCalls, 2);
+  row.record_fingerprint = "wrong";
+  const second = { ...event, event_id: "event-2" };
+  // Independent decode must continue rejecting mismatched records.
+  await assert.rejects(window.AnrAttribution.decodeEvent([row], second), /标识不一致/);
+});
